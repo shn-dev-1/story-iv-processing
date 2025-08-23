@@ -5,17 +5,19 @@ This repository contains the Terraform configuration for deploying the Story IV 
 ## Overview
 
 The Story IV Processing service is a containerized application that:
-- Processes image generation jobs from SQS queues
+- Processes image generation jobs from SQS queues (with SNS wrapper support)
 - Generates images using Stable Diffusion ONNX models
 - Stores generated images in S3
+- Updates task statuses in DynamoDB
 - Runs on AWS ECS Fargate with ARM64 (Graviton) processors
 
 ## Architecture
 
 - **ECS Fargate**: Runs the containerized application
 - **ECR**: Stores the Docker container images
-- **SQS**: Receives image generation job requests
+- **SQS**: Receives image generation job requests (with SNS wrapper support)
 - **S3**: Stores generated images
+- **DynamoDB**: Tracks task statuses and completion
 - **CloudWatch**: Application logging and monitoring
 - **VPC Endpoints**: For secure communication with AWS services
 
@@ -29,6 +31,7 @@ The Story IV Processing service is a containerized application that:
   - VPC with private subnets
   - SQS queues (including `IV` queue for image generation)
   - S3 buckets for image storage
+  - DynamoDB table for task tracking
   - IAM roles for ECS task execution and tasks
   - Security groups for ECS tasks
 
@@ -41,6 +44,29 @@ For GitHub Actions workflows to function properly, the following secrets must be
 
 These secrets are used by the GitHub Actions workflows to authenticate with AWS and deploy infrastructure and applications.
 
+## Message Format
+
+The application processes SQS messages that may be wrapped in SNS notifications. The expected message format is:
+
+```json
+{
+  "parent_id": "12312312",
+  "task_id": "12312311", 
+  "prompt": "a cozy cabin in the forest, golden hour",
+  "seed": 1234,             // optional
+  "steps": 15,              // optional (default 15)
+  "guidance": 7.0,          // optional (CFG)
+  "width": 512,             // optional
+  "height": 512,            // optional
+  "num_images": 1,          // optional, <= 4 recommended for CPU
+  "negative_prompt": ""     // optional
+}
+```
+
+### SNS Wrapper Support
+
+When messages come through SNS, they are automatically unwrapped and validated. The application handles both direct SQS messages and SNS-wrapped messages seamlessly.
+
 ## Configuration
 
 ### Variables
@@ -52,7 +78,10 @@ Key configuration variables in `terraform.tfvars`:
 - `app_name`: Application name (default: story-iv)
 - `cpu`: CPU units (2048 = 2 vCPU for ARM64)
 - `memory`: Memory in MiB (8192 = 8GB)
+- `app_port`: Application port (default: 8080)
 - `app_count`: Number of ECS service instances
+
+**Note:** These values are automatically used by both Terraform infrastructure deployment and GitHub Actions application deployment, ensuring consistency across the entire deployment pipeline.
 
 ### Remote State
 
@@ -128,6 +157,14 @@ For manual deployment or local development:
 - **ECS Service**: Service running the image generation tasks
 - **CloudWatch Log Group**: `/ecs/story-iv` for application logs
 - **Security Group**: Network access control for the application
+
+## Terraform Outputs
+
+The following values are exposed as Terraform outputs for use in CI/CD pipelines:
+
+- **Configuration values**: `cpu`, `memory`, `app_port` - Used by GitHub Actions for task definition updates
+- **Resource identifiers**: ECR repository, ECS service, security group ARNs and IDs
+- **Infrastructure details**: Log group names, task definition family, etc.
 
 ## Monitoring
 

@@ -56,3 +56,19 @@ output "security_group_arn" {
   description = "ARN of the security group"
   value       = aws_security_group.iv_app.arn
 }
+
+# Configuration outputs for GitHub Actions
+output "cpu" {
+  description = "CPU units for the task"
+  value       = var.cpu
+}
+
+output "memory" {
+  description = "Memory for the task in MiB"
+  value       = var.memory
+}
+
+output "app_port" {
+  description = "Port the application listens on"
+  value       = var.app_port
+}

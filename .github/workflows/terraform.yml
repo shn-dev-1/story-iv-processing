@@ -163,21 +163,29 @@ jobs:
         QUEUE_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-iv --query 'QueueUrl' --output text)
         echo "queue_url=$QUEUE_URL" >> $GITHUB_OUTPUT
         
-        # Get the DynamoDB table name (assuming it follows the naming convention)
+        # Get the DynamoDB table name from the story-infra outputs
         DYNAMODB_TABLE="story-video-tasks"
         echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
         
-        # Get the memory value from Terraform outputs (or use default)
-        MEMORY_VALUE="8192"
-        echo "memory_value=$MEMORY_VALUE" >> $GITHUB_OUTPUT
+    - name: Get Terraform Outputs
+      id: get-terraform-outputs
+      run: |
+        # Get the CPU, memory, and app port values from Terraform outputs
+        cd ${{ github.workspace }}
+        terraform init
+        terraform output -json > terraform_outputs.json
         
-        # Get the CPU value from Terraform outputs (or use default)
-        CPU_VALUE="2048"
+        # Extract values from Terraform outputs
+        CPU_VALUE=$(jq -r '.cpu.value' terraform_outputs.json)
+        MEMORY_VALUE=$(jq -r '.memory.value' terraform_outputs.json)
+        APP_PORT_VALUE=$(jq -r '.app_port.value' terraform_outputs.json)
+        
         echo "cpu_value=$CPU_VALUE" >> $GITHUB_OUTPUT
-        
-        # Get the app port value from Terraform outputs (or use default)
-        APP_PORT_VALUE="8080"
+        echo "memory_value=$MEMORY_VALUE" >> $GITHUB_OUTPUT
         echo "app_port_value=$APP_PORT_VALUE" >> $GITHUB_OUTPUT
+        
+        # Clean up
+        rm terraform_outputs.json
         
     - name: Get IAM Role ARNs
       id: get-role-arns
@@ -205,9 +213,9 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|${{ steps.get-aws-resources.outputs.memory_value }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|${{ steps.get-aws-resources.outputs.cpu_value }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|${{ steps.get-aws-resources.outputs.app_port_value }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|${{ steps.get-terraform-outputs.outputs.memory_value }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|${{ steps.get-terraform-outputs.outputs.cpu_value }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|${{ steps.get-terraform-outputs.outputs.app_port_value }}|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
         

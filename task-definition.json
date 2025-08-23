@@ -32,6 +32,10 @@
         {
           "name": "MODEL_DIR",
           "value": "/opt/models/sd15-onnx"
+        },
+        {
+          "name": "DYNAMODB_TABLE",
+          "value": "PLACEHOLDER_DYNAMODB_TABLE"
         }
       ],
       "logConfiguration": {
