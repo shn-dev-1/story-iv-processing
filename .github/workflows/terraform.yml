@@ -125,7 +125,7 @@ jobs:
 
   build-and-deploy:
     name: 'Build and Deploy Application'
-    runs-on: ubuntu-22.04-arm64   # <-- ARM64 runner to avoid slow QEMU emulation
+    runs-on: ubuntu-22.04-arm  # <-- ARM64 runner to avoid slow QEMU emulation
     needs: check-infrastructure
     timeout-minutes: 120
 
