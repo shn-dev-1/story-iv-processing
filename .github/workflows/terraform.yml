@@ -125,64 +125,66 @@ jobs:
 
   build-and-deploy:
     name: 'Build and Deploy Application'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-arm64   # <-- ARM64 runner to avoid slow QEMU emulation
     needs: check-infrastructure
-    
+    timeout-minutes: 120
+
     steps:
     - name: Checkout
       uses: actions/checkout@v4
-      
+
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
-        
+
     - name: Login to Amazon ECR
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
-      
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-      
-    - name: Build, tag, and push image to Amazon ECR
+
+    # Build & push for ARM64 with cache
+    - name: Build and push (ARM64)
+      id: docker-build
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: linux/arm64
+        push: true
+        tags: |
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    # Keep the same output name your workflow already uses (steps.build-image.outputs.image)
+    - name: Set image output
       id: build-image
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        # Build a docker container and push it to ECR
-        # Build for ARM64 only since ECS Fargate tasks are configured for ARM64 (Graviton)
-        # Build once and tag with both commit SHA and latest
-        docker buildx build --platform linux/arm64 \
-          -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-          -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
-          . --push
-        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-        
+        echo "image=$ECR_REGISTRY/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
     - name: Get SQS Queue URL and DynamoDB Table Name
       id: get-aws-resources
       run: |
-        # Get the IV queue URL from the story-infra outputs
         QUEUE_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-iv --query 'QueueUrl' --output text)
         echo "queue_url=$QUEUE_URL" >> $GITHUB_OUTPUT
-        
-        # Get the DynamoDB table name from the story-infra outputs
         DYNAMODB_TABLE="story-video-tasks"
         echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
-        
 
-        
     - name: Get IAM Role ARNs
       id: get-role-arns
       run: |
-        # Get the task execution and task role ARNs
         EXEC_ROLE_ARN=$(aws iam get-role --role-name story-iv-task-execution-role --query 'Role.Arn' --output text)
         TASK_ROLE_ARN=$(aws iam get-role --role-name story-iv-task-role --query 'Role.Arn' --output text)
         echo "exec_role_arn=$EXEC_ROLE_ARN" >> $GITHUB_OUTPUT
         echo "task_role_arn=$TASK_ROLE_ARN" >> $GITHUB_OUTPUT
-        
+
     - name: Fill in the new image ID in the Amazon ECS task definition
       id: task-def
       uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -190,11 +192,10 @@ jobs:
         task-definition: task-definition.json
         container-name: story-iv-container
         image: ${{ steps.build-image.outputs.image }}
-        
+
     - name: Update task definition with role ARNs, queue URL, and DynamoDB table
       id: update-task-def
       run: |
-        # Update the task definition with the actual values
         TASK_DEF=$(cat ${{ steps.task-def.outputs.task-definition }})
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_EXECUTION_ROLE_ARN|${{ steps.get-role-arns.outputs.exec_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
@@ -205,7 +206,7 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|8080|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
-        
+
     - name: Deploy Amazon ECS task definition
       uses: aws-actions/amazon-ecs-deploy-task-definition@v1
       with:
@@ -213,7 +214,7 @@ jobs:
         service: ${{ env.ECS_SERVICE }}
         cluster: ${{ env.ECS_CLUSTER }}
         wait-for-service-stability: true
-        
+
     - name: Comment Deployment Result
       uses: actions/github-script@v7
       with:
@@ -229,8 +230,6 @@ jobs:
             The Image Generation application has been deployed and is now processing messages from the SQS queue.
             
             *Deployed by @${{ github.actor }}*`;
-            
-            // Try to create a commit comment
             await github.rest.repos.createCommitComment({
               owner: context.repo.owner,
               repo: context.repo.repo,

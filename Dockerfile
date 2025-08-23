@@ -1,56 +1,58 @@
-# Build for ARM64 with:
-#   docker buildx build --platform linux/arm64 -t sd15-onnx-arm64 . --no-cache
-
+# syntax=docker/dockerfile:1.6
 FROM python:3.11-slim
-
-# System deps (minimal; add libjpeg/zlib for Pillow)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libjpeg62-turbo \
-    zlib1g \
-    && rm -rf /var/lib/apt/lists/*
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# Use ONE cache/model path at build+runtime
+# System deps for PIL, etc.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libjpeg62-turbo zlib1g \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# --- Install Python deps with ARM-friendly wheels ---
+# 1) Upgrade tooling
+RUN pip install --upgrade pip setuptools wheel
+
+# 2) Install CPU wheels for torch & ORT FIRST (arm64 aarch64 wheels exist)
+#    Use PyTorch's CPU index URL to avoid source builds.
+ENV PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
+RUN pip install --only-binary=:all: \
+    --extra-index-url $PYTORCH_INDEX_URL \
+    torch==2.1.0 onnxruntime==1.17.0
+
+# 3) Now install the rest
+COPY requirements.txt /app/
+RUN pip install --only-binary=:all: -r requirements.txt
+
+# --- (Optional) pre-bake model weights if you need them at runtime & offline ---
 ENV HF_HOME=/opt/hfcache \
     HUGGINGFACE_HUB_CACHE=/opt/hfcache/hub \
     TRANSFORMERS_CACHE=/opt/hfcache/transformers \
-    MODEL_DIR=/opt/models/sd15-onnx
+    HF_HUB_DISABLE_TELEMETRY=1
 
-RUN mkdir -p $HF_HOME $MODEL_DIR
+RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers /opt/models && \
+    chown -R root:root /opt
 
-WORKDIR /app
-COPY requirements.txt /app/
+# Example: pre-download a model (change to your repo if needed)
+# ARG MODEL_REPO="nmkd/stable-diffusion-1.5-onnx-fp16"
+# RUN python - <<'PY'
+# from huggingface_hub import snapshot_download
+# import os
+# repo = os.environ.get("MODEL_REPO")
+# snapshot_download(repo, local_dir="/opt/models/sd15-onnx", local_dir_use_symlinks=False)
+# print("Model cached")
+# PY
 
-# Core libs: onnxruntime (AArch64), diffusers, optimum, fastapi, boto3
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
+# Force offline at runtime
+ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
-# ---- PRE-DOWNLOAD MODEL (online only during build) ----
-# We use a public ONNX SD1.5 repo so license acceptance isn’t gated.
-# You can swap MODEL_REPO at build-arg time if you prefer another ONNX export.
-ARG MODEL_REPO="nmkd/stable-diffusion-1.5-onnx-fp16"
-RUN python - <<'PY'
-from huggingface_hub import snapshot_download
-import os, shutil
-repo = os.environ.get("MODEL_REPO", "nmkd/stable-diffusion-1.5-onnx-fp16")
-target = os.environ.get("MODEL_DIR", "/opt/models/sd15-onnx")
-# Grab entire repo locally (weights + tokenizer files if present)
-snapshot_download(repo_id=repo, local_dir=target, local_dir_use_symlinks=False)
-print("Downloaded:", repo, "->", target)
-PY
-
-# ---- FORCE OFFLINE FOR RUNTIME ----
-ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1
-
-# Make model + cache readable by non-root
-RUN useradd -m -u 10001 appuser && chown -R appuser:appuser /opt
+# Copy only app after deps so code edits don't bust cache
 COPY main.py /app/main.py
 
-USER appuser
 EXPOSE 8080
+USER root
 CMD ["uvicorn", "main:app", "--host=0.0.0.0", "--port=8080"]
