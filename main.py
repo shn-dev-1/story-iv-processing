@@ -170,20 +170,38 @@ def generate_images(
     num_images: int,
     seed: Optional[int],
 ):
-    # Deterministic CPU RNG if seed provided
-    generator = np.random.RandomState(seed) if seed is not None else None
-
-    out = pipe(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        num_inference_steps=int(steps),
-        guidance_scale=float(guidance),
-        height=int(height),
-        width=int(width),
-        num_images_per_prompt=int(num_images),
-        generator=generator,
-    )
-    return out.images  # list[PIL.Image]
+    """Generate images using Stable Diffusion ONNX pipeline"""
+    log.info(f"[generate] Starting image generation - prompt: '{prompt[:50]}...', steps: {steps}, guidance: {guidance}, size: {width}x{height}, count: {num_images}, seed: {seed}")
+    
+    start_time = time.time()
+    
+    try:
+        # Deterministic CPU RNG if seed provided
+        generator = np.random.RandomState(seed) if seed is not None else None
+        if seed is not None:
+            log.info(f"[generate] Using deterministic seed: {seed}")
+        
+        log.info(f"[generate] Calling Stable Diffusion pipeline...")
+        out = pipe(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            num_inference_steps=int(steps),
+            guidance_scale=float(guidance),
+            height=int(height),
+            width=int(width),
+            num_images_per_prompt=int(num_images),
+            generator=generator,
+        )
+        
+        generation_time = time.time() - start_time
+        log.info(f"[generate] Successfully generated {len(out.images)} images in {generation_time:.2f}s")
+        
+        return out.images  # list[PIL.Image]
+        
+    except Exception as e:
+        generation_time = time.time() - start_time
+        log.error(f"[generate] Failed to generate images after {generation_time:.2f}s: {e}")
+        raise
 
 # ---------- Job processor ----------
 def process_job(job: dict):
@@ -238,6 +256,8 @@ def process_job(job: dict):
         return
 
     log.info(f"[processing] Task {task_id} not completed, proceeding with processing")
+    log.info(f"[processing] Job details - parent_id: {parent_id}, prompt: '{prompt[:100]}...', steps: {steps}, guidance: {guidance}, size: {width}x{height}, images: {nimgs}")
+    
     update_task_status(parent_id, task_id, "IN_PROGRESS")
 
     steps     = int(actual_job.get("steps", 15))
@@ -250,6 +270,9 @@ def process_job(job: dict):
     neg       = actual_job.get("negative_prompt", None)
 
     # Generate
+    log.info(f"[processing] Starting image generation for task {task_id}")
+    generation_start = time.time()
+    
     images: List[Image.Image] = generate_images(
         prompt=prompt,
         negative_prompt=neg,
@@ -260,36 +283,55 @@ def process_job(job: dict):
         num_images=nimgs,
         seed=seed,
     )
+    
+    generation_time = time.time() - generation_start
+    log.info(f"[processing] Image generation completed in {generation_time:.2f}s for task {task_id}")
 
     # Upload to S3
+    log.info(f"[processing] Starting S3 upload for task {task_id}")
+    upload_start = time.time()
+    
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         if nimgs == 1:
             out_path = td / "out.png"
             images[0].save(out_path, format="PNG")
+            log.info(f"[processing] Saving single image to {out_path}")
             _upload_s3(out_path, out_s3)
             log.info(f"[done] uploaded image -> {out_s3}")
             try:
                 out_path.unlink()
-            except Exception:
-                pass
+                log.debug(f"[cleanup] Deleted local file: {out_path}")
+            except Exception as e:
+                log.warning(f"[cleanup] Failed to delete local file {out_path}: {e}")
         else:
             b, k = _parse_s3_uri(out_s3)
             base, ext = (k, ".png") if "." not in k else tuple(k.rsplit(".", 1))
             ext = "." + ext if not ext.startswith(".") else "." + ext.split(".")[-1]
+            log.info(f"[processing] Processing {nimgs} images, base: {base}, ext: {ext}")
+            
             for i, im in enumerate(images):
                 p = td / f"out_{i}.png"
                 im.save(p, format="PNG")
+                log.info(f"[processing] Saving image {i+1}/{nimgs} to {p}")
                 s3.upload_file(str(p), b, f"{base}-{i}{ext}")
+                log.info(f"[processing] Uploaded image {i+1}/{nimgs} to s3://{b}/{base}-{i}{ext}")
+                
                 try:
                     p.unlink()
-                except Exception:
-                    pass
+                    log.debug(f"[cleanup] Deleted local file: {p}")
+                except Exception as e:
+                    log.warning(f"[cleanup] Failed to delete local file {p}: {e}")
+                    
             log.info(f"[done] uploaded {nimgs} images to s3://{b}/{base}-[0..{nimgs-1}]{ext}")
 
         # Mark complete with media URL
         update_task_status(parent_id, task_id, "COMPLETED", out_s3)
-        log.info(f"[done] updated DynamoDB task {task_id} to COMPLETED")
+        
+        total_time = time.time() - generation_start
+        upload_time = time.time() - upload_start
+        log.info(f"[done] Task {task_id} completed successfully in {total_time:.2f}s total (generation: {generation_time:.2f}s, upload: {upload_time:.2f}s)")
+        log.info(f"[done] updated DynamoDB task {task_id} to COMPLETED with media URL: {out_s3}")
 
 # ---------- Worker loop ----------
 def worker_loop():

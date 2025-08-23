@@ -6,11 +6,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# Minimal system deps (Pillow, certs)
+# Minimal system deps (Pillow, certs, curl for health checks)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libjpeg62-turbo \
     zlib1g \
+    curl \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
