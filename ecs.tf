@@ -40,7 +40,7 @@ resource "aws_ecs_task_definition" "iv_app" {
       environment = [
         {
           name  = "QUEUE_URL"
-          value = data.terraform_remote_state.story_infra.outputs.task_queue_urls["IV"]
+          value = data.terraform_remote_state.story_infra.outputs.task_queue_urls["IMAGE"]
         },
         {
           name  = "AWS_REGION"
