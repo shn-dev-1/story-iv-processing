@@ -180,8 +180,8 @@ jobs:
     - name: Get IAM Role ARNs
       id: get-role-arns
       run: |
-        EXEC_ROLE_ARN=$(aws iam get-role --role-name story-iv-task-execution-role --query 'Role.Arn' --output text)
-        TASK_ROLE_ARN=$(aws iam get-role --role-name story-iv-task-role --query 'Role.Arn' --output text)
+        EXEC_ROLE_ARN=$(aws iam get-role --role-name story_image_task_execution_role --query 'Role.Arn' --output text)
+        TASK_ROLE_ARN=$(aws iam get-role --role-name story_image_task_role --query 'Role.Arn' --output text)
         echo "exec_role_arn=$EXEC_ROLE_ARN" >> $GITHUB_OUTPUT
         echo "task_role_arn=$TASK_ROLE_ARN" >> $GITHUB_OUTPUT
 
