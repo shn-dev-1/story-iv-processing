@@ -146,7 +146,18 @@ app = FastAPI()
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True}
+    """Health check endpoint for ECS"""
+    return {
+        "ok": True,
+        "timestamp": _iso_now_ms(),
+        "status": "healthy",
+        "model_loaded": os.path.isdir(MODEL_DIR) and len(os.listdir(MODEL_DIR)) > 0
+    }
+
+@app.on_event("startup")
+def _start_worker():
+    t = threading.Thread(target=worker_loop, daemon=True)
+    t.start()
 
 # ---------- Generation ----------
 def generate_images(
@@ -325,13 +336,4 @@ def worker_loop():
                 except Exception as status_error:
                     print(f"[worker] Failed to update task status to FAILED: {status_error}", file=sys.stderr)
 
-app = FastAPI()
-
-@app.on_event("startup")
-def _start_worker():
-    t = threading.Thread(target=worker_loop, daemon=True)
-    t.start()
-
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
+# Move the startup event and health check to the main app instance above
