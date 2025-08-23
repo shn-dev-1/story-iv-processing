@@ -69,6 +69,31 @@ if not p_unet.exists():
 print("Model snapshot OK:", target)
 PY
 
+# Create a default preprocessor_config.json if the export didn't include one
+RUN python - <<'PY'
+import os, json, pathlib, sys
+model_dir = pathlib.Path(os.environ.get("MODEL_DIR", "/opt/models/sd15-onnx"))
+root_pp = model_dir / "preprocessor_config.json"
+feat_pp = model_dir / "feature_extractor" / "preprocessor_config.json"
+if not root_pp.exists() and not feat_pp.exists():
+    # Minimal CLIPImageProcessor config that Stable Diffusion 1.5 expects
+    cfg = {
+        "_class_name": "CLIPImageProcessor",
+        "do_resize": True,
+        "do_center_crop": False,
+        "do_rescale": True,
+        "resample": 3,               # PIL.BICUBIC
+        "size": 512,
+        "crop_size": 512,
+        "image_mean": [0.5, 0.5, 0.5],
+        "image_std": [0.5, 0.5, 0.5]
+    }
+    root_pp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    print(f"Created default preprocessor_config.json at {root_pp}")
+else:
+    print("preprocessor_config.json already present")
+PY
+
 # -------- Force offline for runtime --------
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
