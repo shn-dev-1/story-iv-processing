@@ -6,30 +6,28 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# System deps for PIL, etc.
+# System deps for Pillow, etc.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates libjpeg62-turbo zlib1g \
+    ca-certificates \
+    libjpeg62-turbo \
+    zlib1g \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# --- Make sure requirements.txt is in the image BEFORE using it ---
+COPY requirements.txt /app/requirements.txt
 
 # --- Install Python deps with ARM-friendly wheels ---
 # 1) Upgrade tooling
 RUN pip install --upgrade pip setuptools wheel
 
-# 2) Install CPU wheels for torch & ORT FIRST (arm64 aarch64 wheels exist)
+# 2) Install CPU wheels for torch & ORT FIRST (ARM64 aarch64 wheels exist)
 #    Use PyTorch's CPU index URL to avoid source builds.
-#   Install CPU wheels first to avoid source builds
 ENV PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install --only-binary=:all: --extra-index-url $PYTORCH_INDEX_URL \
-        torch==2.1.0 onnxruntime==1.17.0 && \
-    pip install --only-binary=:all: -r requirements.txt
-
-
-# 3) Now install the rest
-COPY requirements.txt /app/
-RUN pip install --only-binary=:all: -r requirements.txt
+RUN pip install --only-binary=:all: --extra-index-url $PYTORCH_INDEX_URL \
+      torch==2.1.0 onnxruntime==1.17.0 && \
+    pip install --only-binary=:all: -r /app/requirements.txt
 
 # --- (Optional) pre-bake model weights if you need them at runtime & offline ---
 ENV HF_HOME=/opt/hfcache \
@@ -37,10 +35,9 @@ ENV HF_HOME=/opt/hfcache \
     TRANSFORMERS_CACHE=/opt/hfcache/transformers \
     HF_HUB_DISABLE_TELEMETRY=1
 
-RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers /opt/models && \
-    chown -R root:root /opt
+RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers /opt/models
 
-# Example: pre-download a model (change to your repo if needed)
+# Example: pre-download a model (uncomment and set your repo if needed)
 # ARG MODEL_REPO="nmkd/stable-diffusion-1.5-onnx-fp16"
 # RUN python - <<'PY'
 # from huggingface_hub import snapshot_download
@@ -53,9 +50,8 @@ RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers /opt/models && \
 # Force offline at runtime
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
-# Copy only app after deps so code edits don't bust cache
+# Copy app code after deps so code edits don't bust cache
 COPY main.py /app/main.py
 
 EXPOSE 8080
-USER root
 CMD ["uvicorn", "main:app", "--host=0.0.0.0", "--port=8080"]
