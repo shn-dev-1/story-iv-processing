@@ -1,0 +1,69 @@
+{
+  "family": "story-iv-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "PLACEHOLDER_CPU",
+  "memory": "PLACEHOLDER_MEMORY",
+  "executionRoleArn": "PLACEHOLDER_EXECUTION_ROLE_ARN",
+  "taskRoleArn": "PLACEHOLDER_TASK_ROLE_ARN",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "containerDefinitions": [
+    {
+      "name": "story-iv-container",
+      "image": "ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/story-iv:latest",
+      "portMappings": [
+        {
+          "containerPort": "PLACEHOLDER_APP_PORT",
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        {
+          "name": "QUEUE_URL",
+          "value": "PLACEHOLDER_QUEUE_URL"
+        },
+        {
+          "name": "AWS_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "MODEL_DIR",
+          "value": "/opt/models/sd15-onnx"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/story-iv",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:PLACEHOLDER_APP_PORT/healthz || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "essential": true
+    }
+  ],
+  "tags": [
+    {
+      "key": "Name",
+      "value": "story-iv-task-definition"
+    },
+    {
+      "key": "Environment",
+      "value": "production"
+    },
+    {
+      "key": "Purpose",
+      "value": "Image Generation Application Task Definition"
+    }
+  ]
+}

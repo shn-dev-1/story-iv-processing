@@ -1,0 +1,13 @@
+# CPU-only, ARM64-friendly
+onnxruntime>=1.17.0
+diffusers>=0.29.0
+optimum[onnxruntime]>=1.19.0
+transformers>=4.41.0
+safetensors>=0.4.3
+accelerate>=0.30.0
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+boto3>=1.34
+Pillow>=10.3
+numpy>=1.26

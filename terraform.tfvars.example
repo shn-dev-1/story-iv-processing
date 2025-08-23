@@ -1,0 +1,24 @@
+# AWS Configuration
+aws_region  = "us-east-1"
+environment = "production"
+
+# Application Configuration
+app_name            = "story-iv"
+ecr_repository_name = "story-iv"
+app_image_tag       = "latest"
+app_count           = 1
+
+# ECS Configuration - ARM64 (Graviton) with 2vCPU and 8GB memory
+cpu      = 2048
+memory   = 8192
+app_port = 8080
+
+# Note: The following values are automatically fetched from the story-infra repository:
+# - vpc_id
+# - private_subnet_ids
+# - task_queue_urls["IV"] (SQS queue for image generation jobs)
+# - s3_bucket_name (for storing generated images)
+# - dynamodb_table_name
+# - task_execution_role_arn and task_role_arn
+# - ecs_cluster_name
+# - ecs_tasks_security_group_id

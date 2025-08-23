@@ -1,0 +1,247 @@
+name: 'Terraform Infrastructure and Application Deployment'
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  TF_VERSION: '1.5.0'
+  AWS_REGION: 'us-east-1'
+  ECR_REPOSITORY: 'story-iv'
+  ECS_CLUSTER: 'story-tts-cluster'
+  ECS_SERVICE: 'story-iv-service'
+  ECS_TASK_DEFINITION: 'story-iv-task'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform-infrastructure:
+    name: 'Terraform Infrastructure'
+    runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: ./
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Terraform Init
+      run: terraform init
+      
+    - name: Terraform Format Check
+      run: terraform fmt -check
+      
+    - name: Terraform Validate
+      run: terraform validate
+      
+    - name: Terraform Plan
+      id: plan
+      run: terraform plan -no-color -out=tfplan
+      
+    - name: Terraform Apply
+      run: terraform apply tfplan
+      
+    - name: Comment Infrastructure Result
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          try {
+            const output = `#### 🏗️ Terraform Infrastructure Deployed Successfully!
+            
+            Infrastructure has been successfully deployed to production!
+            
+            *Pusher: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            
+            // Try to create a commit comment
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: output
+            });
+          } catch (error) {
+            console.log('Could not create commit comment:', error.message);
+          }
+
+  check-infrastructure:
+    name: 'Check Infrastructure Ready'
+    runs-on: ubuntu-latest
+    needs: terraform-infrastructure
+    
+    steps:
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Check ECR Repository Exists
+      run: |
+        echo "Checking if ECR repository exists..."
+        aws ecr describe-repositories --repository-names ${{ env.ECR_REPOSITORY }} || {
+          echo "❌ ECR repository ${{ env.ECR_REPOSITORY }} does not exist"
+          echo "Infrastructure deployment may have failed"
+          exit 1
+        }
+        echo "✅ ECR repository exists"
+        
+    - name: Check ECS Service Exists
+      run: |
+        echo "Checking if ECS service exists..."
+        aws ecs describe-services --cluster ${{ env.ECS_CLUSTER }} --services ${{ env.ECS_SERVICE }} || {
+          echo "❌ ECS service ${{ env.ECS_SERVICE }} does not exist"
+          echo "Infrastructure deployment may have failed"
+          exit 1
+        }
+        echo "✅ ECS service exists"
+        
+    - name: Check ECS Cluster Exists
+      run: |
+        echo "Checking if ECS cluster exists..."
+        aws ecs describe-clusters --clusters ${{ env.ECS_CLUSTER }} || {
+          echo "❌ ECS cluster ${{ env.ECS_CLUSTER }} does not exist"
+          echo "Infrastructure deployment may have failed"
+          exit 1
+        }
+        echo "✅ ECS cluster exists"
+
+  build-and-deploy:
+    name: 'Build and Deploy Application'
+    runs-on: ubuntu-latest
+    needs: check-infrastructure
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+      
+    - name: Build, tag, and push image to Amazon ECR
+      id: build-image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        # Build a docker container and push it to ECR
+        docker buildx build --platform linux/arm64 -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker buildx build --platform linux/arm64 -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        
+    - name: Get SQS Queue URL and DynamoDB Table Name
+      id: get-aws-resources
+      run: |
+        # Get the IV queue URL from the story-infra outputs
+        QUEUE_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-iv --query 'QueueUrl' --output text)
+        echo "queue_url=$QUEUE_URL" >> $GITHUB_OUTPUT
+        
+        # Get the DynamoDB table name (assuming it follows the naming convention)
+        DYNAMODB_TABLE="story-video-tasks"
+        echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
+        
+        # Get the memory value from Terraform outputs (or use default)
+        MEMORY_VALUE="8192"
+        echo "memory_value=$MEMORY_VALUE" >> $GITHUB_OUTPUT
+        
+        # Get the CPU value from Terraform outputs (or use default)
+        CPU_VALUE="2048"
+        echo "cpu_value=$CPU_VALUE" >> $GITHUB_OUTPUT
+        
+        # Get the app port value from Terraform outputs (or use default)
+        APP_PORT_VALUE="8080"
+        echo "app_port_value=$APP_PORT_VALUE" >> $GITHUB_OUTPUT
+        
+    - name: Get IAM Role ARNs
+      id: get-role-arns
+      run: |
+        # Get the task execution and task role ARNs
+        EXEC_ROLE_ARN=$(aws iam get-role --role-name story-iv-task-execution-role --query 'Role.Arn' --output text)
+        TASK_ROLE_ARN=$(aws iam get-role --role-name story-iv-task-role --query 'Role.Arn' --output text)
+        echo "exec_role_arn=$EXEC_ROLE_ARN" >> $GITHUB_OUTPUT
+        echo "task_role_arn=$TASK_ROLE_ARN" >> $GITHUB_OUTPUT
+        
+    - name: Fill in the new image ID in the Amazon ECS task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: story-iv-container
+        image: ${{ steps.build-image.outputs.image }}
+        
+    - name: Update task definition with role ARNs, queue URL, and DynamoDB table
+      id: update-task-def
+      run: |
+        # Update the task definition with the actual values
+        TASK_DEF=$(cat ${{ steps.task-def.outputs.task-definition }})
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_EXECUTION_ROLE_ARN|${{ steps.get-role-arns.outputs.exec_role_arn }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|${{ steps.get-aws-resources.outputs.memory_value }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|${{ steps.get-aws-resources.outputs.cpu_value }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|${{ steps.get-aws-resources.outputs.app_port_value }}|g")
+        echo "$TASK_DEF" > updated-task-definition.json
+        echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
+        
+    - name: Deploy Amazon ECS task definition
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: updated-task-definition.json
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
+        
+    - name: Comment Deployment Result
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          try {
+            const output = `#### 🚀 Image Generation Application Deployed Successfully!
+            
+            **Image:** \`${{ steps.build-image.outputs.image }}\`
+            **Service:** \`${{ env.ECS_SERVICE }}\`
+            **Cluster:** \`${{ env.ECS_CLUSTER }}\`
+            
+            The Image Generation application has been deployed and is now processing messages from the SQS queue.
+            
+            *Deployed by @${{ github.actor }}*`;
+            
+            // Try to create a commit comment
+            await github.rest.repos.createCommitComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: output
+            });
+          } catch (error) {
+            console.log('Could not create commit comment:', error.message);
+          }
