@@ -172,7 +172,7 @@ jobs:
     - name: Get SQS Queue URL and DynamoDB Table Name
       id: get-aws-resources
       run: |
-        QUEUE_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-iv --query 'QueueUrl' --output text)
+        QUEUE_URL=$(aws sqs get-queue-url --queue-name story-sqs-queue-image --query 'QueueUrl' --output text)
         echo "queue_url=$QUEUE_URL" >> $GITHUB_OUTPUT
         DYNAMODB_TABLE="story-video-tasks"
         echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
