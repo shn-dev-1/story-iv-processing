@@ -19,10 +19,13 @@ RUN pip install --upgrade pip setuptools wheel
 
 # 2) Install CPU wheels for torch & ORT FIRST (arm64 aarch64 wheels exist)
 #    Use PyTorch's CPU index URL to avoid source builds.
+#   Install CPU wheels first to avoid source builds
 ENV PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
-RUN pip install --only-binary=:all: \
-    --extra-index-url $PYTORCH_INDEX_URL \
-    torch==2.1.0 onnxruntime==1.17.0
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --only-binary=:all: --extra-index-url $PYTORCH_INDEX_URL \
+        torch==2.1.0 onnxruntime==1.17.0 && \
+    pip install --only-binary=:all: -r requirements.txt
+
 
 # 3) Now install the rest
 COPY requirements.txt /app/
