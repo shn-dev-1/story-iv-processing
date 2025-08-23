@@ -143,6 +143,9 @@ jobs:
       id: login-ecr
       uses: aws-actions/amazon-ecr-login@v2
       
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
     - name: Build, tag, and push image to Amazon ECR
       id: build-image
       env:
@@ -150,10 +153,9 @@ jobs:
         IMAGE_TAG: ${{ github.sha }}
       run: |
         # Build a docker container and push it to ECR
-        docker buildx build --platform linux/arm64 -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker buildx build --platform linux/arm64 -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        # Build for both ARM64 and AMD64 to ensure compatibility
+        docker buildx build --platform linux/amd64,linux/arm64 -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG . --push
+        docker buildx build --platform linux/amd64,linux/arm64 -t $ECR_REGISTRY/$ECR_REPOSITORY:latest . --push
         echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
         
     - name: Get SQS Queue URL and DynamoDB Table Name
@@ -167,25 +169,7 @@ jobs:
         DYNAMODB_TABLE="story-video-tasks"
         echo "dynamodb_table=$DYNAMODB_TABLE" >> $GITHUB_OUTPUT
         
-    - name: Get Terraform Outputs
-      id: get-terraform-outputs
-      run: |
-        # Get the CPU, memory, and app port values from Terraform outputs
-        cd ${{ github.workspace }}
-        terraform init
-        terraform output -json > terraform_outputs.json
-        
-        # Extract values from Terraform outputs
-        CPU_VALUE=$(jq -r '.cpu.value' terraform_outputs.json)
-        MEMORY_VALUE=$(jq -r '.memory.value' terraform_outputs.json)
-        APP_PORT_VALUE=$(jq -r '.app_port.value' terraform_outputs.json)
-        
-        echo "cpu_value=$CPU_VALUE" >> $GITHUB_OUTPUT
-        echo "memory_value=$MEMORY_VALUE" >> $GITHUB_OUTPUT
-        echo "app_port_value=$APP_PORT_VALUE" >> $GITHUB_OUTPUT
-        
-        # Clean up
-        rm terraform_outputs.json
+
         
     - name: Get IAM Role ARNs
       id: get-role-arns
@@ -213,9 +197,9 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|${{ steps.get-terraform-outputs.outputs.memory_value }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|${{ steps.get-terraform-outputs.outputs.cpu_value }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|${{ steps.get-terraform-outputs.outputs.app_port_value }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|8192|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|2048|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|8080|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
         
