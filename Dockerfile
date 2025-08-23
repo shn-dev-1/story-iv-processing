@@ -23,40 +23,46 @@ RUN pip install --upgrade pip setuptools wheel && \
     pip install --only-binary=:all: -r /app/requirements.txt
 
 # --- Model caching (ONLINE during build only) ---
-# One cache location used at build+runtime
 ENV HF_HOME=/opt/hfcache \
-    HUGGINGFACE_HUB_CACHE=/opt/hfcache/hub \
-    TRANSFORMERS_CACHE=/opt/hfcache/transformers \
-    HF_HUB_DISABLE_TELEMETRY=1 \
-    MODEL_DIR=/opt/models/sd15-onnx
+HUGGINGFACE_HUB_CACHE=/opt/hfcache/hub \
+TRANSFORMERS_CACHE=/opt/hfcache/transformers \
+HF_HUB_DISABLE_TELEMETRY=1 \
+MODEL_DIR=/opt/models/sd15-onnx
 
 RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers $MODEL_DIR
 
-# Choose an ONNX export of SD1.5; you can override at build time:
-#   docker buildx build --platform linux/arm64 --build-arg MODEL_REPO="your/repo" ...
 ARG MODEL_REPO="nmkd/stable-diffusion-1.5-onnx-fp16"
 
-# Download only needed files into MODEL_DIR; ensure offline envs are NOT set during this step
 RUN python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
-# make sure offline flags don't block download at build-time
+# ensure we're ONLINE at build time
 os.environ.pop("HF_HUB_OFFLINE", None)
 os.environ.pop("TRANSFORMERS_OFFLINE", None)
-repo  = os.environ.get("MODEL_REPO")
-target= os.environ.get("MODEL_DIR", "/opt/models/sd15-onnx")
-# pull common ONNX pipeline files (model_index.json + .onnx + tokenizer assets)
+
+repo   = os.environ.get("MODEL_REPO")
+target = os.environ.get("MODEL_DIR", "/opt/models/sd15-onnx")
+
+# Pull the ONNX pipeline plus any external data files the .onnx graphs reference
+allow = [
+    "model_index.json",
+    "**/*.onnx",
+    "**/*.onnx_data",
+    "**/*.pb",
+    "**/*.bin",
+    "**/*.data",
+    # common aux files
+    "tokenizer/**",
+    "vocab*.json", "merges.txt", "tokenizer.json", "special_tokens_map.json",
+    "scheduler/**",
+    "feature_extractor/**",
+    "**/config.json",
+]
 snapshot_download(
     repo_id=repo,
     local_dir=target,
     local_dir_use_symlinks=False,
-    allow_patterns=[
-        "model_index.json",
-        "**/*.onnx",
-        "tokenizer/**",
-        "vocab*.json", "merges.txt", "tokenizer.json", "special_tokens_map.json",
-        "scheduler/**", "feature_extractor/**", "text_encoder/config.json", "vae/config.json", "unet/config.json"
-    ],
+    allow_patterns=allow,
 )
 print("Downloaded model into:", target)
 PY

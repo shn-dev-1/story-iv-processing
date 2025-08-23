@@ -87,7 +87,7 @@ resource "aws_ecs_task_definition" "iv_app" {
 # ECS Service
 resource "aws_ecs_service" "iv_app" {
   name            = "${var.app_name}-service"
-  cluster         = data.terraform_remote_state.story_infra.outputs.ecs_cluster_name
+  cluster         = data.terraform_remote_state.story_infra.outputs.story_image_cluster_name
   task_definition = aws_ecs_task_definition.iv_app.arn
   desired_count   = var.app_count
 
