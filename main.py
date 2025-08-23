@@ -281,6 +281,9 @@ def process_job(job: dict):
             images[0].save(out_path, format="PNG")
             _upload_s3(out_path, out_s3)
             log.info(f"[done] uploaded image -> {out_s3}")
+            # Clean up local file after successful upload
+            out_path.unlink()
+            log.debug(f"[cleanup] deleted local file: {out_path}")
         else:
             # Derive prefix from provided key, append index
             b, k = _parse_s3_uri(out_s3)
@@ -290,6 +293,9 @@ def process_job(job: dict):
                 p = td / f"out_{i}.png"
                 im.save(p, format="PNG")
                 s3.upload_file(str(p), b, f"{base}-{i}{ext}")
+                # Clean up local file after successful upload
+                p.unlink()
+                log.debug(f"[cleanup] deleted local file: {p}")
             log.info(f"[done] uploaded {nimgs} images to {out_s3}")
         
         # Update DynamoDB task status to COMPLETED with S3 URI
