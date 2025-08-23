@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     LANG=C.UTF-8 LC_ALL=C.UTF-8
 
-# Minimal system deps (Pillow etc.)
+# Minimal system deps (Pillow, certs)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libjpeg62-turbo \
@@ -15,19 +15,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# -------- Python deps (ARM64-friendly) --------
+# ----------------- Python deps -----------------
+# Put requirements.txt next to this Dockerfile in your repo
 COPY requirements.txt /app/requirements.txt
 
-# Upgrade tooling
+# 1) Upgrade tooling
 RUN pip install --upgrade pip setuptools wheel
 
-# Install CPU wheels for torch + onnxruntime FIRST (no source builds on ARM64)
+# 2) Install ARM64 CPU wheels for torch + onnxruntime FIRST (no source builds)
 ENV PYTORCH_INDEX_URL="https://download.pytorch.org/whl/cpu"
 RUN pip install --only-binary=:all: --extra-index-url $PYTORCH_INDEX_URL \
       torch==2.1.0 onnxruntime==1.17.0 && \
     pip install --only-binary=:all: -r /app/requirements.txt
 
-# -------- Model caching (ONLINE during build only) --------
+# ----------------- Model snapshot -----------------
 # One cache path used at build and runtime
 ENV HF_HOME=/opt/hfcache \
     HUGGINGFACE_HUB_CACHE=/opt/hfcache/hub \
@@ -37,46 +38,53 @@ ENV HF_HOME=/opt/hfcache \
 
 RUN mkdir -p /opt/hfcache/hub /opt/hfcache/transformers $MODEL_DIR
 
-# Choose an ONNX SD1.5 export with embedded tensors.
-# You can override with --build-arg MODEL_REPO="...".
-ARG MODEL_REPO="TensorStack/stable-diffusion-v1-5-onnx"
+# Default to the NMKD full ONNX export; override with --build-arg if desired
+ARG MODEL_REPO="nmkd/stable-diffusion-1.5-onnx-fp16"
 
-# Pull the FULL snapshot (no filters) so all needed files are present.
-# We temporarily unset offline flags for this step only.
+# Download the FULL snapshot (no filters) so external data (if any) is included
 RUN python - <<'PY'
 import os, sys, pathlib
 from huggingface_hub import snapshot_download
 
-# ensure we're ONLINE at build time
+# Ensure we're ONLINE during build
 os.environ.pop("HF_HUB_OFFLINE", None)
 os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
 repo   = os.environ.get("MODEL_REPO")
 target = os.environ.get("MODEL_DIR", "/opt/models/sd15-onnx")
 
-print(f"Downloading model repo: {repo}")
+print(f"[model] downloading full snapshot: {repo}")
 snapshot_download(
     repo_id=repo,
     local_dir=target,
     local_dir_use_symlinks=False
 )
 
-# quick sanity: expect .onnx graphs present; embedded tensors → no weights.pb required
-p_unet = pathlib.Path(target) / "unet" / "model.onnx"
-if not p_unet.exists():
-    print(f"[FATAL] Missing UNet ONNX at {p_unet}", file=sys.stderr)
+# Verify required ONNX graphs exist (Diffusers ONNX layout)
+req = [
+    ("unet", "model.onnx"),
+    ("vae_decoder", "model.onnx"),
+    ("text_encoder", "model.onnx"),
+]
+missing = []
+for sub, fname in req:
+    p = pathlib.Path(target) / sub / fname
+    if not p.exists() or p.stat().st_size == 0:
+        missing.append(str(p))
+if missing:
+    print("[FATAL] Missing required ONNX files:\n  " + "\n  ".join(missing), file=sys.stderr)
     sys.exit(2)
-print("Model snapshot OK:", target)
+
+print("[model] ONNX files present, snapshot OK:", target)
 PY
 
-# Create a default preprocessor_config.json if the export didn't include one
+# Some community ONNX exports omit an image preprocessor config. Create a default if absent.
 RUN python - <<'PY'
-import os, json, pathlib, sys
+import os, json, pathlib
 model_dir = pathlib.Path(os.environ.get("MODEL_DIR", "/opt/models/sd15-onnx"))
 root_pp = model_dir / "preprocessor_config.json"
 feat_pp = model_dir / "feature_extractor" / "preprocessor_config.json"
 if not root_pp.exists() and not feat_pp.exists():
-    # Minimal CLIPImageProcessor config that Stable Diffusion 1.5 expects
     cfg = {
         "_class_name": "CLIPImageProcessor",
         "do_resize": True,
@@ -88,16 +96,18 @@ if not root_pp.exists() and not feat_pp.exists():
         "image_mean": [0.5, 0.5, 0.5],
         "image_std": [0.5, 0.5, 0.5]
     }
+    root_pp.parent.mkdir(parents=True, exist_ok=True)
     root_pp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    print(f"Created default preprocessor_config.json at {root_pp}")
+    print(f"[model] created default preprocessor_config.json at {root_pp}")
 else:
-    print("preprocessor_config.json already present")
+    print("[model] preprocessor_config.json already present")
 PY
 
-# -------- Force offline for runtime --------
+# Force offline at runtime (no Hub access in Fargate)
 ENV HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 
-# -------- App code --------
+# ----------------- App code -----------------
+# Put your FastAPI worker at repo root as main.py
 COPY main.py /app/main.py
 
 EXPOSE 8080
