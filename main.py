@@ -1,6 +1,8 @@
 import os, json, tempfile, threading, sys, re, time, logging
 from pathlib import Path
 from typing import Optional, List
+from datetime import datetime
+
 import numpy as np
 from PIL import Image
 
@@ -10,13 +12,12 @@ from fastapi import FastAPI
 # -------- Custom Exceptions --------
 class SQSMessageValidationError(Exception):
     """Raised when an SQS message fails validation."""
-    
     def __init__(self, message: str, missing_fields: list = None, received_fields: dict = None):
         self.message = message
         self.missing_fields = missing_fields or []
         self.received_fields = received_fields or {}
         super().__init__(self.message)
-    
+
     def __str__(self):
         return f"SQSMessageValidationError: {self.message}"
 
@@ -35,10 +36,11 @@ from diffusers import OnnxStableDiffusionPipeline
 from diffusers.schedulers import DPMSolverMultistepScheduler  # good CPU scheduler
 
 # ---------- Config ----------
-QUEUE_URL     = os.getenv("QUEUE_URL")   # e.g. https://sqs.us-east-1.amazonaws.com/123/imagen-jobs
-AWS_REGION    = os.getenv("AWS_REGION", "us-east-1")
-MODEL_DIR     = os.getenv("MODEL_DIR", "/opt/models/sd15-onnx")
-DYNAMODB_TABLE = os.getenv("DYNAMODB_TABLE") # DynamoDB table name from remote state
+QUEUE_URL       = os.getenv("QUEUE_URL")   # e.g. https://sqs.us-east-1.amazonaws.com/123/imagen-jobs
+AWS_REGION      = os.getenv("AWS_REGION", "us-east-1")
+MODEL_DIR       = os.getenv("MODEL_DIR", "/opt/models/sd15-onnx")
+DYNAMODB_TABLE  = os.getenv("DYNAMODB_TABLE") # DynamoDB table name from remote state
+OUTPUT_BUCKET   = os.getenv("OUTPUT_BUCKET", "story-video-data")  # configurable
 
 if not QUEUE_URL:
     print("[ERROR] QUEUE_URL is required", file=sys.stderr)
@@ -48,9 +50,14 @@ if not DYNAMODB_TABLE:
     print("[ERROR] DYNAMODB_TABLE environment variable is required but not set", file=sys.stderr)
     sys.exit(1)
 
-s3  = boto3.client("s3", region_name=AWS_REGION)
-sqs = boto3.client("sqs",  region_name=AWS_REGION)
-dynamodb = boto3.client("dynamodb", region_name=AWS_REGION)
+# --- model preflight ---
+if not (os.path.isdir(MODEL_DIR) and os.listdir(MODEL_DIR)):
+    log.error(f"[fatal] MODEL_DIR '{MODEL_DIR}' not found or empty. Ensure the Docker build baked the model.")
+    sys.exit(1)
+
+s3        = boto3.client("s3", region_name=AWS_REGION)
+sqs       = boto3.client("sqs", region_name=AWS_REGION)
+dynamodb  = boto3.client("dynamodb", region_name=AWS_REGION)
 
 # ---------- Helpers ----------
 def _parse_s3_uri(s3_uri: str):
@@ -66,34 +73,30 @@ def _upload_s3(from_path: Path, s3_uri: str):
     s3.upload_file(str(from_path), b, k)
     return b, k
 
+def _iso_now_ms() -> str:
+    # RFC3339-ish with milliseconds, UTC 'Z'
+    return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+
+def _snap8(x: int) -> int:
+    # Clamp to reasonable range and snap to a multiple of 8
+    x = max(64, min(1024, int(x)))
+    return (x // 8) * 8
+
 # ---------- DynamoDB helpers ----------
 def is_task_completed(parent_id: str, task_id: str) -> bool:
     """
     Check if a task is already completed in DynamoDB.
-    
-    Args:
-        parent_id: The partition key (parent_id)
-        task_id: The sort key (task_id)
-    
-    Returns:
-        bool: True if task is completed, False otherwise
     """
     try:
         response = dynamodb.get_item(
             TableName=DYNAMODB_TABLE,
-            Key={
-                'id': {'S': parent_id},
-                'task_id': {'S': task_id}
-            }
+            Key={'id': {'S': parent_id}, 'task_id': {'S': task_id}}
         )
-        
         if 'Item' in response:
             item = response['Item']
             if 'status' in item and item['status']['S'] == 'COMPLETED':
                 return True
-        
         return False
-        
     except Exception as e:
         log.error(f"[dynamodb] Failed to check task status for {task_id}: {e}")
         raise RuntimeError(f"Unable to verify task status for {task_id}. DynamoDB check failed: {e}") from e
@@ -101,49 +104,27 @@ def is_task_completed(parent_id: str, task_id: str) -> bool:
 def update_task_status(parent_id: str, task_id: str, status: str, s3_url: str = None):
     """
     Update the status of a task in DynamoDB.
-    
-    Args:
-        parent_id: The partition key (parent_id)
-        task_id: The sort key (task_id)
-        status: The status to set
-        s3_url: Optional S3 URI to set in the media_url field
     """
-    table_name = DYNAMODB_TABLE
-    
     try:
-        # Build update expression based on status and s3_url
         set_parts = ['#status = :status', '#date_updated = :date_updated']
-        expression_attribute_names = {
-            '#status': 'status',
-            '#date_updated': 'date_updated'
-        }
-        expression_attribute_values = {
-            ':status': {'S': status},
-            ':date_updated': {'S': time.strftime('%Y-%m-%dT%H:%M:%S.%fZ', time.gmtime())}
-        }
-        
-        # Add media_url if provided
+        expr_names = {'#status': 'status', '#date_updated': 'date_updated'}
+        expr_values = {':status': {'S': status}, ':date_updated': {'S': _iso_now_ms()}}
+
         if s3_url:
             set_parts.append('#media_url = :media_url')
-            expression_attribute_names['#media_url'] = 'media_url'
-            expression_attribute_values['#media_url'] = {'S': s3_url}
-        
-        # Build the update expression with proper comma separation
+            expr_names['#media_url'] = 'media_url'
+            expr_values[':media_url'] = {'S': s3_url}
+
         update_expression = f"SET {', '.join(set_parts)}"
-        
-        # Only remove sparse_gsi_hash_key if status is COMPLETED
         if status == "COMPLETED":
             update_expression += " REMOVE sparse_gsi_hash_key"
-        
+
         response = dynamodb.update_item(
-            TableName=table_name,
-            Key={
-                'id': {'S': parent_id},
-                'task_id': {'S': task_id}
-            },
+            TableName=DYNAMODB_TABLE,
+            Key={'id': {'S': parent_id}, 'task_id': {'S': task_id}},
             UpdateExpression=update_expression,
-            ExpressionAttributeNames=expression_attribute_names,
-            ExpressionAttributeValues=expression_attribute_values,
+            ExpressionAttributeNames=expr_names,
+            ExpressionAttributeValues=expr_values,
             ReturnValues='UPDATED_NEW'
         )
         log.info(f"[dynamodb] Updated task {task_id} status to {status}")
@@ -152,15 +133,13 @@ def update_task_status(parent_id: str, task_id: str, status: str, s3_url: str = 
         log.error(f"[dynamodb] Failed to update task {task_id}: {e}")
         raise
 
-# ---------- Load ONNX pipeline (CPU) ----------
-# We load strictly from local files so this works behind a NAT-less Fargate task.
+# ---------- Load ONNX pipeline (CPU, offline) ----------
 pipe = OnnxStableDiffusionPipeline.from_pretrained(
     MODEL_DIR,
     provider="CPUExecutionProvider",
     local_files_only=True,
-    safety_checker=None,  # keep infra minimal; enforce your own moderation if needed
+    safety_checker=None,
 )
-# Swap in a CPU-friendly scheduler (fewer steps works well)
 pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 
 app = FastAPI()
@@ -180,7 +159,7 @@ def generate_images(
     num_images: int,
     seed: Optional[int],
 ):
-    # Diffusers ONNX allows numpy RandomState as generator for determinism. :contentReference[oaicite:3]{index=3}
+    # Deterministic CPU RNG if seed provided
     generator = np.random.RandomState(seed) if seed is not None else None
 
     out = pipe(
@@ -193,8 +172,7 @@ def generate_images(
         num_images_per_prompt=int(num_images),
         generator=generator,
     )
-    # .images is a list of PIL.Image objects
-    return out.images
+    return out.images  # list[PIL.Image]
 
 # ---------- Job processor ----------
 def process_job(job: dict):
@@ -213,11 +191,10 @@ def process_job(job: dict):
       "negative_prompt": ""     // optional
     }
     """
-    # Handle SNS message envelope - extract the actual message
+    # Unwrap SNS envelope if present
     actual_job = job
-    if "Type" in job and job["Type"] == "Notification" and "Message" in job:
+    if job.get("Type") == "Notification" and "Message" in job:
         try:
-            # Parse the nested JSON message from SNS
             actual_job = json.loads(job["Message"])
             log.info("[sns] Extracted job from SNS notification envelope")
         except json.JSONDecodeError as e:
@@ -226,11 +203,10 @@ def process_job(job: dict):
                 missing_fields=[],
                 received_fields=job
             )
-    
+
     # Required fields
     required_fields = ["parent_id", "task_id", "prompt"]
-    missing_fields = [field for field in required_fields if field not in actual_job]
-    
+    missing_fields = [f for f in required_fields if f not in actual_job]
     if missing_fields:
         raise SQSMessageValidationError(
             message=f"Job missing required fields: {', '.join(missing_fields)}",
@@ -239,27 +215,28 @@ def process_job(job: dict):
         )
 
     parent_id = actual_job["parent_id"]
-    task_id = actual_job["task_id"]
-    prompt = actual_job["prompt"]
-    out_s3 = f"s3://story-video-data/{parent_id}/{task_id}.png"
+    task_id   = actual_job["task_id"]
+    prompt    = actual_job["prompt"]
 
-    # Check if task is already completed to avoid duplicate processing
+    # Derive S3 output (configurable bucket)
+    out_s3 = f"s3://{OUTPUT_BUCKET}/{parent_id}/{task_id}.png"
+
+    # Idempotency: skip if already completed
     if is_task_completed(parent_id, task_id):
         log.info(f"[skip] Task {task_id} already completed, skipping processing")
-        return  # Exit early, message will be deleted by caller
-    
+        return
+
     log.info(f"[processing] Task {task_id} not completed, proceeding with processing")
-    
-    # Update task status to IN_PROGRESS
     update_task_status(parent_id, task_id, "IN_PROGRESS")
-    
-    steps    = int(actual_job.get("steps", 15))
-    guidance = float(actual_job.get("guidance", 7.0))
-    width    = int(actual_job.get("width", 512))
-    height   = int(actual_job.get("height", 512))
-    nimgs    = int(actual_job.get("num_images", 1))
-    seed     = actual_job.get("seed", None)
-    neg      = actual_job.get("negative_prompt", None)
+
+    steps     = int(actual_job.get("steps", 15))
+    guidance  = float(actual_job.get("guidance", 7.0))
+    width     = _snap8(actual_job.get("width", 512))
+    height    = _snap8(actual_job.get("height", 512))
+    nimgs_req = int(actual_job.get("num_images", 1))
+    nimgs     = max(1, min(nimgs_req, 4))   # cap for CPU sanity
+    seed      = actual_job.get("seed", None)
+    neg       = actual_job.get("negative_prompt", None)
 
     # Generate
     images: List[Image.Image] = generate_images(
@@ -273,19 +250,19 @@ def process_job(job: dict):
         seed=seed,
     )
 
+    # Upload to S3
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
-        # If multiple images requested, suffix the key(s) with -i.png automatically
         if nimgs == 1:
             out_path = td / "out.png"
             images[0].save(out_path, format="PNG")
             _upload_s3(out_path, out_s3)
             log.info(f"[done] uploaded image -> {out_s3}")
-            # Clean up local file after successful upload
-            out_path.unlink()
-            log.debug(f"[cleanup] deleted local file: {out_path}")
+            try:
+                out_path.unlink()
+            except Exception:
+                pass
         else:
-            # Derive prefix from provided key, append index
             b, k = _parse_s3_uri(out_s3)
             base, ext = (k, ".png") if "." not in k else tuple(k.rsplit(".", 1))
             ext = "." + ext if not ext.startswith(".") else "." + ext.split(".")[-1]
@@ -293,12 +270,13 @@ def process_job(job: dict):
                 p = td / f"out_{i}.png"
                 im.save(p, format="PNG")
                 s3.upload_file(str(p), b, f"{base}-{i}{ext}")
-                # Clean up local file after successful upload
-                p.unlink()
-                log.debug(f"[cleanup] deleted local file: {p}")
-            log.info(f"[done] uploaded {nimgs} images to {out_s3}")
-        
-        # Update DynamoDB task status to COMPLETED with S3 URI
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+            log.info(f"[done] uploaded {nimgs} images to s3://{b}/{base}-[0..{nimgs-1}]{ext}")
+
+        # Mark complete with media URL
         update_task_status(parent_id, task_id, "COMPLETED", out_s3)
         log.info(f"[done] updated DynamoDB task {task_id} to COMPLETED")
 
@@ -310,18 +288,14 @@ def worker_loop():
             QueueUrl=QUEUE_URL,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=20,        # long poll
-            VisibilityTimeout=900      # SD on CPU can take time; adjust per task size
+            VisibilityTimeout=900      # tune to exceed worst-case generation time
         )
         for m in resp.get("Messages", []):
             rcpt = m["ReceiptHandle"]
             try:
-                # Debug: Log the raw message structure
-                print(f"[debug] Raw SQS message: {m}")
-                print(f"[debug] Message body: {m['Body']}")
-                
-                job = json.loads(m["Body"])
-                print(f"[debug] Parsed job: {job}")
-                
+                # Debug (short)
+                body = m.get("Body", "{}")
+                job = json.loads(body)
                 process_job(job)
                 sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=rcpt)
             except SQSMessageValidationError as e:
@@ -330,35 +304,34 @@ def worker_loop():
                     print(f"[worker] Missing fields: {e.missing_fields}", file=sys.stderr)
                 if e.received_fields:
                     print(f"[worker] Received fields: {list(e.received_fields.keys())}", file=sys.stderr)
-                
+                # Consider deleting or routing to DLQ to avoid poison loops
+                # sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=rcpt)
             except Exception as e:
                 print(f"[worker] job failed: {e}", file=sys.stderr)
-                
-                # If validation passed but processing failed, update task status to FAILED
+                # Try to mark FAILED if we can extract ids
                 try:
-                    # Extract the actual job data (in case it's wrapped in SNS envelope)
                     actual_job_for_status = job
-                    if "Type" in job and job["Type"] == "Notification" and "Message" in job:
+                    if isinstance(job, dict) and job.get("Type") == "Notification" and "Message" in job:
                         try:
                             actual_job_for_status = json.loads(job["Message"])
                         except json.JSONDecodeError:
-                            actual_job_for_status = job  # Fall back to original
-                    
-                    # Extract task IDs from the actual job for status update
-                    if 'parent_id' in actual_job_for_status and 'task_id' in actual_job_for_status:
-                        parent_id = actual_job_for_status['parent_id']
-                        task_id = actual_job_for_status['task_id']
-                        
-                        # Update task status to FAILED
-                        update_task_status(parent_id, task_id, "FAILED")
-                        print(f"[worker] Updated task status to FAILED for: {task_id}")
-                    else:
-                        print("[worker] Could not update task status - missing required fields in job", file=sys.stderr)
-                        
+                            pass
+                    if isinstance(actual_job_for_status, dict) and \
+                       'parent_id' in actual_job_for_status and 'task_id' in actual_job_for_status:
+                        update_task_status(actual_job_for_status['parent_id'],
+                                           actual_job_for_status['task_id'],
+                                           "FAILED")
+                        print(f"[worker] Updated task status to FAILED for: {actual_job_for_status['task_id']}")
                 except Exception as status_error:
                     print(f"[worker] Failed to update task status to FAILED: {status_error}", file=sys.stderr)
+
+app = FastAPI()
 
 @app.on_event("startup")
 def _start_worker():
     t = threading.Thread(target=worker_loop, daemon=True)
     t.start()
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}

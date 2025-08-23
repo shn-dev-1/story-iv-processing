@@ -158,6 +158,8 @@ jobs:
         tags: |
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+        build-args: |
+          MODEL_REPO=TensorStack/stable-diffusion-v1-5-onnx
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
