@@ -65,7 +65,7 @@ if not mi.exists():
     raise SystemExit("[FATAL] model_index.json not found at " + str(mi))
 
 print("[modelscope] Download complete:", target)
-PY  
+PY
 
 # Make the container run fully offline at runtime
 ENV HF_HUB_OFFLINE=1 \
