@@ -125,7 +125,7 @@ jobs:
 
   build-and-deploy:
     name: 'Build and Deploy Application'
-    runs-on: ubuntu-22.04-arm  # <-- ARM64 runner to avoid slow QEMU emulation
+    runs-on: ubuntu-latest  # x86_64 runner for GPU compatibility
     needs: check-infrastructure
     timeout-minutes: 120
 
@@ -147,19 +147,19 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    # Build & push for ARM64 with cache
-    - name: Build and push (ARM64)
+    # Build & push for x86_64 with cache
+    - name: Build and push (x86_64)
       id: docker-build
       uses: docker/build-push-action@v6
       with:
         context: .
-        platforms: linux/arm64
+        platforms: linux/amd64
         push: true
         tags: |
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
         build-args: |
-          MODEL_REPO=nmkd/stable-diffusion-1.5-onnx-fp16
+          MODEL_REPO=wan2.2-ti2v-5b
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -203,8 +203,6 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|16384|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|4096|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|8080|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
@@ -223,13 +221,13 @@ jobs:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
           try {
-            const output = `#### 🚀 Image Generation Application Deployed Successfully!
+            const output = `#### 🚀 Video Generation Application Deployed Successfully!
             
             **Image:** \`${{ steps.build-image.outputs.image }}\`
             **Service:** \`${{ env.ECS_SERVICE }}\`
             **Cluster:** \`${{ env.ECS_CLUSTER }}\`
             
-            The Image Generation application has been deployed and is now processing messages from the SQS queue.
+            The Video Generation application has been deployed and is now processing messages from the SQS queue.
             
             *Deployed by @${{ github.actor }}*`;
             await github.rest.repos.createCommitComment({

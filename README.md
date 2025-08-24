@@ -1,25 +1,28 @@
 # Story IV Processing - Terraform Infrastructure
 
-This repository contains the Terraform configuration for deploying the Story IV (Image Generation) processing service to AWS ECS.
+This repository contains the Terraform configuration for deploying the Story IV (Video Generation) processing service to AWS ECS.
 
 ## Overview
 
 The Story IV Processing service is a containerized application that:
-- Processes image generation jobs from SQS queues (with SNS wrapper support)
-- Generates images using Stable Diffusion ONNX models
-- Stores generated images in S3
+- Processes video generation jobs from SQS queues (with SNS wrapper support)
+- Generates videos using Wan 2.2 TI2V-5B models
+- Stores generated videos in S3
 - Updates task statuses in DynamoDB
-- Runs on AWS ECS Fargate with ARM64 (Graviton) processors
+- Runs on AWS ECS EC2 with GPU instances (g5.xlarge - A10G 24GB VRAM)
 
 ## Architecture
 
-- **ECS Fargate**: Runs the containerized application
+- **ECS EC2**: Runs the containerized application on GPU instances
 - **ECR**: Stores the Docker container images
-- **SQS**: Receives image generation job requests (with SNS wrapper support)
-- **S3**: Stores generated images
+- **SQS**: Receives video generation job requests (with SNS wrapper support)
+- **S3**: Stores generated videos
 - **DynamoDB**: Tracks task statuses and completion
 - **CloudWatch**: Application logging and monitoring
 - **VPC Endpoints**: For secure communication with AWS services
+- **GPU Instances**: g5.xlarge with A10G 24GB VRAM for video processing
+- **Auto Scaling Group**: Manages GPU instance lifecycle
+- **NVIDIA Container Runtime**: Enables GPU access in containers
 
 ## Prerequisites
 
@@ -29,11 +32,12 @@ The Story IV Processing service is a containerized application that:
 - The following resources must exist in the shared infrastructure:
   - ECS Cluster
   - VPC with private subnets
-  - SQS queues (including `IV` queue for image generation)
-  - S3 buckets for image storage
+  - SQS queues (including `VIDEO` queue for video generation)
+  - S3 buckets for video storage
   - DynamoDB table for task tracking
   - IAM roles for ECS task execution and tasks
   - Security groups for ECS tasks
+  - ECS instance profile for EC2 instances
 
 ## GitHub Secrets
 
@@ -56,9 +60,9 @@ The application processes SQS messages that may be wrapped in SNS notifications.
   "seed": 1234,             // optional
   "steps": 15,              // optional (default 15)
   "guidance": 7.0,          // optional (CFG)
-  "width": 512,             // optional
-  "height": 512,            // optional
-  "num_images": 1,          // optional, <= 4 recommended for CPU
+  "width": 1280,            // optional (default 1280 for 720p)
+  "height": 720,            // optional (default 720 for 720p)
+  "num_videos": 1,          // optional, <= 2 recommended for GPU
   "negative_prompt": ""     // optional
 }
 ```
@@ -76,10 +80,12 @@ Key configuration variables in `terraform.tfvars`:
 - `aws_region`: AWS region (default: us-east-1)
 - `environment`: Environment name (default: production)
 - `app_name`: Application name (default: story-iv)
-- `cpu`: CPU units (2048 = 2 vCPU for ARM64)
-- `memory`: Memory in MiB (8192 = 8GB)
 - `app_port`: Application port (default: 8080)
 - `app_count`: Number of ECS service instances
+- `gpu_ami_id`: AMI ID for GPU instances (Deep Learning AMI)
+- `gpu_instance_type`: EC2 instance type (g5.xlarge - A10G 24GB VRAM)
+
+**Note:** CPU and memory are not specified in the task definition since they are managed by the EC2 instance (g5.xlarge: 4 vCPU, 16GB RAM, 1 GPU).
 
 **Note:** These values are automatically used by both Terraform infrastructure deployment and GitHub Actions application deployment, ensuring consistency across the entire deployment pipeline.
 

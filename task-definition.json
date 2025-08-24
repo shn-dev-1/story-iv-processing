@@ -1,13 +1,11 @@
 {
   "family": "story-iv-task",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "PLACEHOLDER_CPU",
-  "memory": "PLACEHOLDER_MEMORY",
+  "requiresCompatibilities": ["EC2"],
   "executionRoleArn": "PLACEHOLDER_EXECUTION_ROLE_ARN",
   "taskRoleArn": "PLACEHOLDER_TASK_ROLE_ARN",
   "runtimePlatform": {
-    "cpuArchitecture": "ARM64",
+    "cpuArchitecture": "X86_64",
     "operatingSystemFamily": "LINUX"
   },
   "containerDefinitions": [
@@ -31,11 +29,17 @@
         },
         {
           "name": "MODEL_DIR",
-          "value": "/opt/models/sd15-onnx"
+          "value": "/opt/models/wan2.2-ti2v-5b"
         },
         {
           "name": "DYNAMODB_TABLE",
           "value": "PLACEHOLDER_DYNAMODB_TABLE"
+        }
+      ],
+      "resourceRequirements": [
+        {
+          "type": "GPU",
+          "value": "1"
         }
       ],
       "logConfiguration": {
@@ -67,7 +71,7 @@
     },
     {
       "key": "Purpose",
-      "value": "Image Generation Application Task Definition"
+      "value": "Video Generation Application Task Definition"
     }
   ]
 }

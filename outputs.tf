@@ -57,18 +57,35 @@ output "security_group_arn" {
   value       = aws_security_group.iv_app.arn
 }
 
-# Configuration outputs for GitHub Actions
-output "cpu" {
-  description = "CPU units for the task"
-  value       = var.cpu
-}
 
-output "memory" {
-  description = "Memory for the task in MiB"
-  value       = var.memory
-}
 
 output "app_port" {
   description = "Port the application listens on"
   value       = var.app_port
+}
+
+# GPU Configuration outputs
+output "gpu_ami_id" {
+  description = "AMI ID for GPU instances"
+  value       = var.gpu_ami_id
+}
+
+output "gpu_instance_type" {
+  description = "EC2 instance type for GPU instances"
+  value       = var.gpu_instance_type
+}
+
+output "capacity_provider_name" {
+  description = "Name of the ECS capacity provider"
+  value       = aws_ecs_capacity_provider.iv_gpu.name
+}
+
+output "auto_scaling_group_name" {
+  description = "Name of the auto scaling group for GPU instances"
+  value       = aws_autoscaling_group.iv_gpu.name
+}
+
+output "launch_template_name" {
+  description = "Name of the launch template for GPU instances"
+  value       = aws_launch_template.iv_gpu.name
 }

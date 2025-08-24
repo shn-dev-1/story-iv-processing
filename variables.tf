@@ -28,8 +28,6 @@ variable "app_image_tag" {
   default     = "latest"
 }
 
-# If updating these values, update the values in the github actions workflow as well!
-
 variable "app_port" {
   description = "Port the application listens on"
   type        = number
@@ -42,14 +40,16 @@ variable "app_count" {
   default     = 1
 }
 
-variable "cpu" {
-  description = "CPU units for the task (2048 = 2 vCPU)"
-  type        = number
-  default     = 4096
+
+
+variable "gpu_ami_id" {
+  description = "AMI ID for GPU instances (NVIDIA driver preinstalled)"
+  type        = string
+  default     = "ami-0c7217cdde317cfec" # Deep Learning AMI GPU PyTorch 2.1.0 (Amazon Linux 2) 20231213
 }
 
-variable "memory" {
-  description = "Memory for the task in MiB (8192 = 8GB)"
-  type        = number
-  default     = 16384
+variable "gpu_instance_type" {
+  description = "EC2 instance type for GPU instances"
+  type        = string
+  default     = "g5.xlarge" # A10G 24GB VRAM
 }

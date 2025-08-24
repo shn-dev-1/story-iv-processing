@@ -12,13 +12,15 @@ help:
 	@echo "  output  - Show Terraform outputs"
 	@echo ""
 	@echo "Docker Commands:"
-	@echo "  build   - Build ARM64 Docker image"
+	@echo "  build   - Build x86_64 Docker image for GPU"
 	@echo "  push    - Push image to ECR"
 	@echo "  deploy  - Build and push image, then apply Terraform"
 	@echo ""
 	@echo "Utility Commands:"
 	@echo "  logs    - Tail CloudWatch logs"
 	@echo "  clean   - Clean up local files"
+	@echo "  gpu-status - Show GPU instance status"
+	@echo "  gpu-logs   - Tail GPU instance logs"
 
 # Terraform commands
 init:
@@ -38,7 +40,7 @@ output: init
 
 # Docker commands
 build:
-	docker buildx build --platform linux/arm64 -t story-iv:latest .
+	docker buildx build --platform linux/amd64 -t story-iv:latest .
 
 push: build
 	@echo "Logging into ECR..."
@@ -74,3 +76,12 @@ fmt:
 status:
 	@echo "Current Terraform Status:"
 	@terraform show -json 2>/dev/null | jq -r '.values.outputs | to_entries[] | "\(.key): \(.value.value)"' 2>/dev/null || echo "No resources deployed yet"
+
+# GPU instance management
+gpu-status:
+	@echo "GPU Instance Status:"
+	@aws autoscaling describe-auto-scaling-groups --auto-scaling-group-names $$(terraform output -raw auto_scaling_group_name 2>/dev/null || echo "Auto scaling group not created yet") --query 'AutoScalingGroups[0].Instances[].[InstanceId,HealthStatus,LifecycleState]' --output table 2>/dev/null || echo "No GPU instances found"
+
+gpu-logs:
+	@echo "GPU Instance CloudWatch Logs:"
+	@aws logs tail /ecs/story-iv --follow
