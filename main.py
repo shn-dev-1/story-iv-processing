@@ -254,13 +254,15 @@ def process_job(job: dict):
     if is_task_completed(parent_id, task_id):
         log.info(f"[skip] Task {task_id} already completed, skipping processing")
         return
+
+        log.info(f"[processing] Task {task_id} not completed, proceeding with processing")
     
     update_task_status(parent_id, task_id, "IN_PROGRESS")
     
     steps     = int(actual_job.get("steps", 15))
     guidance  = float(actual_job.get("guidance", 7.0))
-    width     = _snap8(actual_job.get("width", 576))
-    height    = _snap8(actual_job.get("height", 1024))
+    width     = _snap8(actual_job.get("width", 512))
+    height    = _snap8(actual_job.get("height", 512))
     nimgs_req = int(actual_job.get("num_images", 1))
     nimgs     = max(1, min(nimgs_req, 4))   # cap for CPU sanity
     seed      = actual_job.get("seed", None)
