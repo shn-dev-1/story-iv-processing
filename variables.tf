@@ -40,6 +40,12 @@ variable "app_count" {
   default     = 1
 }
 
+variable "memory" {
+  description = "Memory for the task in MiB (16384 = 16GB for g5.xlarge)"
+  type        = number
+  default     = 16384
+}
+
 
 
 variable "gpu_ami_id" {

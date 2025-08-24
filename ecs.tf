@@ -15,6 +15,7 @@ resource "aws_ecs_task_definition" "iv_app" {
   family                   = "${var.app_name}-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
+  memory                   = var.memory
 
   execution_role_arn = data.terraform_remote_state.story_infra.outputs.ecs_task_execution_role_arn
   task_role_arn      = data.terraform_remote_state.story_infra.outputs.ecs_task_role_arn
@@ -106,7 +107,7 @@ resource "aws_ecs_capacity_provider" "iv_gpu" {
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.iv_gpu.arn
-    managed_termination_protection = "ENABLED"
+    managed_termination_protection = "DISABLED"
 
     managed_scaling {
       maximum_scaling_step_size = 1

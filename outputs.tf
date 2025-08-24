@@ -64,6 +64,11 @@ output "app_port" {
   value       = var.app_port
 }
 
+output "memory" {
+  description = "Memory for the task in MiB"
+  value       = var.memory
+}
+
 # GPU Configuration outputs
 output "gpu_ami_id" {
   description = "AMI ID for GPU instances"
