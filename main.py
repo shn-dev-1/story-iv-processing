@@ -139,10 +139,10 @@ dtype = torch.float16
 
 try:
     pipe = AutoPipelineForText2Video.from_pretrained(
-        MODEL_DIR,
-        torch_dtype=dtype,
-        local_files_only=True,
-    ).to(device)
+        os.environ["MODEL_DIR"], 
+        local_files_only=True, 
+        torch_dtype=torch.float16
+        ).to(device)
 
     # memory/perf tuning
     try:

@@ -21,24 +21,51 @@ RUN pip install --upgrade pip setuptools wheel \
 
 # ----------------- Model snapshot via ModelScope -----------------
 # Where we’ll store the model at build time
-ENV MODEL_DIR=/opt/models/wan2.2-ti2v-5b \
-    HF_HUB_DISABLE_TELEMETRY=1
-
-RUN mkdir -p ${MODEL_DIR}
+# ----------------- Model snapshot via ModelScope -----------------
+ENV MODEL_DIR=/opt/models/wan2.2-ti2v-5b
+RUN mkdir -p "${MODEL_DIR}"
 
 # Pull Wan 2.2 TI2V-5B from ModelScope (no HF auth needed)
 RUN python - <<'PY'
-import os
+import os, shutil
+from pathlib import Path
 from modelscope.hub.snapshot_download import snapshot_download
 
-target = os.environ.get("MODEL_DIR", "/opt/models/wan2.2-ti2v-5b")
+target = Path(os.environ.get("MODEL_DIR", "/opt/models/wan2.2-ti2v-5b"))
 repo   = "Wan-AI/Wan2.2-TI2V-5B"
 
 print(f"[modelscope] downloading {repo} -> {target}")
-# Place files directly into MODEL_DIR; no symlinks (good for runtime-only hosts)
-snapshot_download(model_id=repo, local_dir=target, local_dir_use_symlinks=False)
+# ModelScope writes into a cache directory; returns the actual local path
+actual = Path(snapshot_download(model_id=repo, cache_dir=str(target)))
+print(f"[modelscope] download path: {actual}")
+
+# Normalize: ensure final files live directly under MODEL_DIR
+if actual != target:
+    # If ModelScope created a nested dir, move its contents up into MODEL_DIR
+    target.mkdir(parents=True, exist_ok=True)
+    for item in actual.iterdir():
+        dest = target / item.name
+        if dest.exists():
+            # remove existing dir/file to avoid collisions in layered builds
+            if dest.is_dir():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+        shutil.move(str(item), str(dest))
+    # Remove the now-empty origin directory (if inside target)
+    try:
+        if actual.exists() and actual != target:
+            shutil.rmtree(actual)
+    except Exception as e:
+        print(f"[modelscope] cleanup warning: {e}")
+
+# Sanity check: Diffusers expects model_index.json at MODEL_DIR root
+mi = target / "model_index.json"
+if not mi.exists():
+    raise SystemExit("[FATAL] model_index.json not found at " + str(mi))
+
 print("[modelscope] Download complete:", target)
-PY
+PY  
 
 # Make the container run fully offline at runtime
 ENV HF_HUB_OFFLINE=1 \
