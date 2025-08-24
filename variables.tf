@@ -28,8 +28,6 @@ variable "app_image_tag" {
   default     = "latest"
 }
 
-# If updating these values, update the values in the github actions workflow as well!
-
 variable "app_port" {
   description = "Port the application listens on"
   type        = number
