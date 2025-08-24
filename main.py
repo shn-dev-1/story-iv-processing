@@ -255,11 +255,10 @@ def process_job(job: dict):
         log.info(f"[skip] Task {task_id} already completed, skipping processing")
         return
 
-    log.info(f"[processing] Task {task_id} not completed, proceeding with processing")
-    log.info(f"[processing] Job details - parent_id: {parent_id}, prompt: '{prompt[:100]}...', steps: {steps}, guidance: {guidance}, size: {width}x{height}, images: {nimgs}")
+        log.info(f"[processing] Task {task_id} not completed, proceeding with processing")
     
     update_task_status(parent_id, task_id, "IN_PROGRESS")
-
+    
     steps     = int(actual_job.get("steps", 15))
     guidance  = float(actual_job.get("guidance", 7.0))
     width     = _snap8(actual_job.get("width", 512))
@@ -268,6 +267,9 @@ def process_job(job: dict):
     nimgs     = max(1, min(nimgs_req, 4))   # cap for CPU sanity
     seed      = actual_job.get("seed", None)
     neg       = actual_job.get("negative_prompt", None)
+    
+    # Log job details after variables are defined
+    log.info(f"[processing] Job details - parent_id: {parent_id}, prompt: '{prompt[:100]}...', steps: {steps}, guidance: {guidance}, size: {width}x{height}, images: {nimgs}")
 
     # Generate
     log.info(f"[processing] Starting image generation for task {task_id}")
