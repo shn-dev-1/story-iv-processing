@@ -21,7 +21,7 @@ class SQSMessageValidationError(Exception):
     def __str__(self):
         return f"SQSMessageValidationError: {self.message}"
 
-# -------- logging --------
+# -------- logging -------- 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("worker")
 
