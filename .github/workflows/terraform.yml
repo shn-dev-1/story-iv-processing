@@ -203,8 +203,8 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_TASK_ROLE_ARN|${{ steps.get-role-arns.outputs.task_role_arn }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|8192|g")
-        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|2048|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MEMORY|16384|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_CPU|4096|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|8080|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT

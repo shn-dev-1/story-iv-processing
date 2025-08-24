@@ -43,11 +43,11 @@ variable "app_count" {
 variable "cpu" {
   description = "CPU units for the task (2048 = 2 vCPU)"
   type        = number
-  default     = 2048
+  default     = 4096
 }
 
 variable "memory" {
   description = "Memory for the task in MiB (8192 = 8GB)"
   type        = number
-  default     = 8192
+  default     = 16384
 }
