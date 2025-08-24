@@ -1,6 +1,6 @@
-import os, json, tempfile, threading, sys, time, logging, subprocess
+import os, json, tempfile, threading, sys, time, logging, subprocess, shutil
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from datetime import datetime
 
 import boto3
@@ -17,6 +17,7 @@ class SQSMessageValidationError(Exception):
         self.missing_fields = missing_fields or []
         self.received_fields = received_fields or {}
         super().__init__(self.message)
+
     def __str__(self):
         return f"SQSMessageValidationError: {self.message}"
 
@@ -53,6 +54,15 @@ if not torch.cuda.is_available():
     log.error("[fatal] CUDA is not available. Wan 2.2 TI2V-5B requires a GPU-equipped host (ECS EC2 w/ g5/g6).")
     sys.exit(1)
 
+# --- ffmpeg preflight ---
+try:
+    if subprocess.run(["ffmpeg", "-version"], capture_output=True).returncode != 0:
+        log.error("[fatal] ffmpeg not found in PATH")
+        sys.exit(1)
+except FileNotFoundError:
+    log.error("[fatal] ffmpeg not found in PATH")
+    sys.exit(1)
+
 # AWS clients
 s3        = boto3.client("s3", region_name=AWS_REGION)
 sqs       = boto3.client("sqs", region_name=AWS_REGION)
@@ -78,12 +88,6 @@ def _upload_s3(from_path: Path, s3_uri: str):
 def _safe_int(v, default):
     try:
         return int(v)
-    except Exception:
-        return default
-
-def _safe_float(v, default):
-    try:
-        return float(v)
     except Exception:
         return default
 
@@ -139,11 +143,23 @@ try:
         torch_dtype=dtype,
         local_files_only=True,
     ).to(device)
-    # light memory/perf tuning
+
+    # memory/perf tuning
+    try:
+        pipe.enable_xformers_memory_efficient_attention()
+    except Exception:
+        pass
     pipe.enable_vae_slicing()
     pipe.enable_vae_tiling()
     pipe.set_progress_bar_config(disable=True)
+
+    try:
+        torch.backends.cudnn.benchmark = True
+    except Exception:
+        pass
+
     log.info("[model] Wan 2.2 TI2V-5B pipeline loaded on CUDA with fp16")
+
 except Exception as e:
     log.error(f"[fatal] Failed to load Wan 2.2 TI2V-5B from {MODEL_DIR}: {e}")
     sys.exit(1)
@@ -178,18 +194,22 @@ def generate_video_mp4(
     width: int,
     height: int,
     seed: Optional[int],
-) -> Path:
+) -> Tuple[Path, Path]:
     """
     Generates frames with Wan 2.2 TI2V-5B and muxes into an MP4 with ffmpeg.
-    Returns local path to the MP4 file.
+    Returns (mp4_path, workdir). Caller is responsible for deleting workdir.
     """
+    # sane defaults
     if seconds <= 0:
         seconds = 5
     if fps <= 0:
         fps = 24
-    # 720p defaults if caller passes odd sizes
     if width <= 0 or height <= 0:
         width, height = 1280, 720
+
+    # snap to even dims for encoders (720p already is)
+    width  = max(256, int(width)  // 2 * 2)
+    height = max(256, int(height) // 2 * 2)
 
     num_frames = seconds * fps
     log.info(f"[t2v] prompt='{prompt[:80]}...', frames={num_frames}, fps={fps}, size={width}x{height}, seed={seed}")
@@ -214,26 +234,37 @@ def generate_video_mp4(
     gen_s = time.time() - t0
     log.info(f"[t2v] frames generated in {gen_s:.2f}s")
 
-    # Frames as list[Image] or tensor; normalize to list of PIL
-    frames = getattr(result, "frames", None)
+    # Normalize frames to list of PIL
+    from PIL import Image
+    frames = getattr(result, "frames", None) or getattr(result, "images", None)
     if frames is None:
-        frames = getattr(result, "images", None)
-    if frames is None or len(frames) == 0:
         raise RuntimeError("No frames returned by the pipeline")
 
-    # Dump frames and mux
-    td = tempfile.TemporaryDirectory()
-    td_path = Path(td.name)
-    for i, im in enumerate(frames):
-        # Force RGB PNG for ffmpeg
-        im = im.convert("RGB")
-        (td_path / f"f_{i:05d}.png").write_bytes(_pil_to_png_bytes(im))
+    norm_frames: List[Image.Image] = []
+    for fr in frames:
+        if isinstance(fr, Image.Image):
+            norm_frames.append(fr)
+        else:
+            import numpy as np
+            if torch.is_tensor(fr):
+                fr = fr.detach().float().clamp(0, 1).mul(255).to(torch.uint8).cpu().numpy()
+            if isinstance(fr, np.ndarray):
+                if fr.ndim == 3 and fr.shape[0] in (1, 3):  # CHW -> HWC
+                    fr = np.transpose(fr, (1, 2, 0))
+                norm_frames.append(Image.fromarray(fr.astype("uint8"), mode="RGB"))
+            else:
+                raise RuntimeError("Unsupported frame type from pipeline")
 
-    mp4_path = td_path / "out.mp4"
+    # Use non-context tempdir so it persists until caller deletes it
+    workdir = Path(tempfile.mkdtemp(prefix="t2v_"))
+    for i, im in enumerate(norm_frames):
+        im.convert("RGB").save(workdir / f"f_{i:05d}.png", format="PNG")
+
+    mp4_path = workdir / "out.mp4"
     cmd = [
         "ffmpeg", "-y",
         "-framerate", str(fps),
-        "-i", str(td_path / "f_%05d.png"),
+        "-i", str(workdir / "f_%05d.png"),
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-vf", f"scale={width}:{height}:flags=lanczos",
@@ -243,14 +274,7 @@ def generate_video_mp4(
     subprocess.run(cmd, check=True)
     log.info(f"[t2v] mp4 muxed @ {mp4_path}")
 
-    # Keep td open; caller will upload and td will be GC'd with object lifetime
-    return mp4_path
-
-def _pil_to_png_bytes(im):
-    from io import BytesIO
-    bio = BytesIO()
-    im.save(bio, format="PNG")
-    return bio.getvalue()
+    return mp4_path, workdir
 
 # ---------- Job processor ----------
 def process_job(job: dict):
@@ -314,9 +338,10 @@ def process_job(job: dict):
     log.info(f"[processing] parent_id={parent_id} task_id={task_id} prompt='{prompt[:120]}...' size={width}x{height}@{fps}fps secs={seconds}")
 
     t_start = time.time()
-    mp4_path = None
+    mp4_path: Optional[Path] = None
+    workdir: Optional[Path] = None
     try:
-        mp4_path = generate_video_mp4(
+        mp4_path, workdir = generate_video_mp4(
             prompt=prompt,
             negative_prompt=neg,
             seconds=seconds,
@@ -337,6 +362,12 @@ def process_job(job: dict):
             log.error(f"[processing] status update failed: {u}")
         raise
     finally:
+        # Always cleanup workdir
+        if workdir:
+            try:
+                shutil.rmtree(workdir, ignore_errors=True)
+            except Exception as ce:
+                log.warning(f"[cleanup] Failed to remove workdir {workdir}: {ce}")
         elapsed = time.time() - t_start
         log.info(f"[done] Task {task_id} finished in {elapsed:.2f}s")
 

@@ -1,16 +1,17 @@
-# Core ML (CPU, ARM64-friendly wheels)
-torch==2.1.0           # via PyTorch CPU index in Dockerfile
-onnxruntime==1.17.0
+# PyTorch + CUDA comes from Dockerfile (installed via cu121 wheels)
+# DO NOT pin torch here; let Dockerfile handle it.
+
+# Core
 safetensors==0.4.3
 numpy==1.26.4
 
-# Diffusers stack (compatible with TF 4.40.x)
-diffusers==0.29.0
-transformers==4.40.2
-optimum[onnxruntime]==1.19.1
-accelerate==0.30.1
+# Diffusers stack
+diffusers==0.30.0
+transformers==4.41.2
+accelerate==0.31.0
+xformers==0.0.27.post2
 Pillow==10.3.0
-requests==2.31.0
+requests==2.32.2
 
 # App
 fastapi==0.110.2
