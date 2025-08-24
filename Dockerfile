@@ -17,8 +17,7 @@ WORKDIR /app
 # ----------------- Python deps -----------------
 COPY requirements.txt /app/requirements.txt
 RUN pip install --upgrade pip setuptools wheel \
- && pip install -r /app/requirements.txt \
- && pip cache purge
+ && pip install -r /app/requirements.txt
 
 # ----------------- Model snapshot via ModelScope -----------------
 # Where we’ll store the model at build time
