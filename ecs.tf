@@ -183,6 +183,14 @@ resource "aws_launch_template" "iv_gpu" {
     enabled = true
   }
 
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size = 75
+      volume_type = "gp3"
+    }
+  }
+
   tag_specifications {
     resource_type = "instance"
     tags = {
