@@ -11,6 +11,8 @@ env:
   ECS_CLUSTER: 'story-image-cluster'
   ECS_SERVICE: 'story-iv-service'
   ECS_TASK_DEFINITION: 'story-iv-task'
+  MODEL_S3_PREFIX: 's3://story-video-gen-model/wan2.2/'
+  MODEL_DIR: '/opt/models/wan2.2-ti2v-5b'
 
 permissions:
   contents: read
@@ -204,6 +206,8 @@ jobs:
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_QUEUE_URL|${{ steps.get-aws-resources.outputs.queue_url }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_DYNAMODB_TABLE|${{ steps.get-aws-resources.outputs.dynamodb_table }}|g")
         TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_APP_PORT|8080|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MODEL_DIR|${{ env.MODEL_DIR }}|g")
+        TASK_DEF=$(echo "$TASK_DEF" | sed "s|PLACEHOLDER_MODEL_S3_PREFIX|${{ env.MODEL_S3_PREFIX }}|g")
         echo "$TASK_DEF" > updated-task-definition.json
         echo "task-def-file=updated-task-definition.json" >> $GITHUB_OUTPUT
 
