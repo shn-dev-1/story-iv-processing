@@ -11,7 +11,7 @@ env:
   ECS_CLUSTER: 'story-image-cluster'
   ECS_SERVICE: 'story-iv-service'
   ECS_TASK_DEFINITION: 'story-iv-task'
-  MODEL_S3_PREFIX: 's3://story-video-gen-model/wan2.2/'
+  MODEL_S3_PREFIX: 's3://story-video-gen-model/wan2.2_diffusers/'
   MODEL_DIR: '/opt/models/wan2.2-ti2v-5b'
 
 permissions:

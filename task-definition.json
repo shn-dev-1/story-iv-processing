@@ -29,13 +29,18 @@
         },
         {
           "name": "MODEL_DIR",
-          "value": "/opt/models/wan2.2-ti2v-5b"
+          "value": "PLACEHOLDER_MODEL_DIR"
         },
         {
           "name": "DYNAMODB_TABLE",
           "value": "PLACEHOLDER_DYNAMODB_TABLE"
+        },
+        {
+          "name": "MODEL_S3_PREFIX",
+          "value": "PLACEHOLDER_MODEL_S3_PREFIX"
         }
       ],
+      "memory": 16384,
       "resourceRequirements": [
         {
           "type": "GPU",

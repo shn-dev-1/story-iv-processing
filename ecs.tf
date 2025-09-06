@@ -56,6 +56,8 @@ resource "aws_ecs_task_definition" "iv_app" {
         }
       ]
 
+      memory = 16384  # 16GB memory allocation
+
       resourceRequirements = [
         {
           type  = "GPU"

@@ -1,4 +1,4 @@
-import os, json, tempfile, threading, sys, time, logging, subprocess
+import os, json, tempfile, threading, sys, time, logging, subprocess, shutil
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -17,8 +17,8 @@ log = logging.getLogger("worker")
 QUEUE_URL       = os.getenv("QUEUE_URL")   # e.g. https://sqs.us-east-1.amazonaws.com/123/video-jobs
 AWS_REGION      = os.getenv("AWS_REGION", "us-east-1")
 MODEL_DIR       = os.getenv("MODEL_DIR", "/opt/models/wan2.2-ti2v-5b")
-MODEL_S3_PREFIX = os.getenv("MODEL_S3_PREFIX")  # e.g. s3://story-video-gen-model/wan2.2/
-DYNAMODB_TABLE  = os.getenv("DYNAMODB_TABLE")  # required
+MODEL_S3_PREFIX = os.getenv("MODEL_S3_PREFIX")  # e.g. s3://story-video-gen-model/wan2.2-diffusers/
+DYNAMODB_TABLE  = os.getenv("DYNAMODB_TABLE")   # required
 OUTPUT_BUCKET   = os.getenv("OUTPUT_BUCKET", "story-video-data")  # configurable
 
 if not QUEUE_URL:
@@ -31,7 +31,7 @@ if not MODEL_S3_PREFIX:
     print("[ERROR] MODEL_S3_PREFIX is required (e.g., s3://bucket/prefix/)", file=sys.stderr)
     sys.exit(1)
 
-# Optional: keep HuggingFace offline at runtime so nothing tries to hit the hub
+# Keep HF offline at runtime (avoids accidental hub calls)
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -46,13 +46,13 @@ def _iso_now_ms() -> str:
     return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
 
 def _parse_s3_uri(s3_uri: str):
+    """Return (bucket, key) without modifying the key (no trailing slash injection)."""
     assert s3_uri.startswith("s3://"), f"Invalid S3 URI: {s3_uri}"
     _, _, rest = s3_uri.partition("s3://")
     bucket, _, key = rest.partition("/")
     if not bucket:
         raise ValueError(f"Invalid S3 URI (missing bucket): {s3_uri}")
-    # key may be empty if prefix is root
-    return bucket, key.rstrip("/") + ("/" if key and not key.endswith("/") else "")
+    return bucket, key  # key may be empty (prefix root)
 
 def _upload_s3(from_path: Path, s3_uri: str):
     b, k = _parse_s3_uri(s3_uri)
@@ -75,9 +75,12 @@ def _safe_float(v, default):
 def _ensure_model_local_from_s3(prefix_uri: str, dest_dir: str):
     """
     Sync all objects under s3://bucket/prefix/ to dest_dir (no deletion).
-    Skips downloading files that already exist with the same size.
+    Skips downloading files that already exist with identical size.
     """
     bucket, prefix = _parse_s3_uri(prefix_uri)
+    if prefix and not prefix.endswith("/"):
+        prefix = prefix + "/"
+
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
 
@@ -86,22 +89,20 @@ def _ensure_model_local_from_s3(prefix_uri: str, dest_dir: str):
     log.info(f"[model] syncing from s3://{bucket}/{prefix} -> {dest}")
 
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        contents = page.get("Contents", [])
-        for obj in contents:
+        for obj in page.get("Contents", []) or []:
             key = obj["Key"]
-            if key.endswith("/"):
-                # "folder" placeholder
+            if key.endswith("/"):  # skip pseudo-folders
                 continue
             found_any = True
             rel = key[len(prefix):] if key.startswith(prefix) else key
             local_path = dest / rel
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
-            size_remote = obj.get("Size", None)
+            size_remote = obj.get("Size")
             if local_path.exists() and size_remote is not None:
                 try:
                     if local_path.stat().st_size == size_remote:
-                        continue  # skip identical size
+                        continue  # identical size: skip
                 except Exception:
                     pass
 
@@ -115,10 +116,10 @@ def _ensure_model_local_from_s3(prefix_uri: str, dest_dir: str):
         )
 
     # sanity check
-    mi = Path(dest_dir) / "model_index.json"
+    mi = dest / "model_index.json"
     if not mi.exists():
-        raise RuntimeError(f"model_index.json not found in {dest_dir}. "
-                           f"Ensure you synced the full Diffusers repo structure.")
+        raise RuntimeError(f"model_index.json not found in {dest}. "
+                           f"Ensure the full Diffusers snapshot was uploaded.")
 
 # ---------- DynamoDB helpers ----------
 def is_task_completed(parent_id: str, task_id: str) -> bool:
@@ -129,8 +130,7 @@ def is_task_completed(parent_id: str, task_id: str) -> bool:
         )
         if 'Item' in response:
             item = response['Item']
-            if 'status' in item and item['status']['S'] == 'COMPLETED':
-                return True
+            return item.get('status', {}).get('S') == 'COMPLETED'
         return False
     except Exception as e:
         log.error(f"[dynamodb] Failed to check task status for {task_id}: {e}")
@@ -148,7 +148,7 @@ def update_task_status(parent_id: str, task_id: str, status: str, s3_url: str = 
         update_expression = f"SET {', '.join(set_parts)}"
         if status == "COMPLETED":
             update_expression += " REMOVE sparse_gsi_hash_key"
-        response = dynamodb.update_item(
+        dynamodb.update_item(
             TableName=DYNAMODB_TABLE,
             Key={'id': {'S': parent_id}, 'task_id': {'S': task_id}},
             UpdateExpression=update_expression,
@@ -157,13 +157,12 @@ def update_task_status(parent_id: str, task_id: str, status: str, s3_url: str = 
             ReturnValues='UPDATED_NEW'
         )
         log.info(f"[dynamodb] Updated task {task_id} status to {status}")
-        return response
     except Exception as e:
         log.error(f"[dynamodb] Failed to update task {task_id}: {e}")
         raise
 
 # ---------- Startup: model sync + load pipeline ----------
-# 1) Make sure CUDA exists (we’re on EC2 GPU)
+# 1) Make sure CUDA exists (EC2 GPU host)
 if not torch.cuda.is_available():
     log.error("[fatal] CUDA is not available. Wan 2.2 TI2V-5B requires a GPU-equipped host (e.g., g5/g6).")
     sys.exit(1)
@@ -182,12 +181,11 @@ except Exception as e:
 # 3) Load the model
 device = "cuda"
 dtype = torch.float16
-
 try:
     pipe = AutoPipelineForText2Video.from_pretrained(
         MODEL_DIR,
         torch_dtype=dtype,
-        local_files_only=True,  # no hub needed at runtime
+        local_files_only=True,  # no hub calls
     ).to(device)
 
     # Memory/perf tweaks
@@ -238,6 +236,7 @@ def generate_video_mp4(
     """
     Generates frames with Wan 2.2 TI2V-5B and muxes into an MP4 with ffmpeg.
     Returns local path to the MP4 file.
+    NOTE: uses mkdtemp() so the caller can safely upload and then delete.
     """
     if seconds <= 0: seconds = 5
     if fps <= 0: fps = 24
@@ -269,32 +268,24 @@ def generate_video_mp4(
     if frames is None:
         raise RuntimeError("No frames returned by the pipeline")
 
-    from PIL import Image
-    norm_frames: List[Image.Image] = []
-    for fr in frames:
-        if isinstance(fr, Image.Image):
-            norm_frames.append(fr)
-        else:
+    # Persist temp Dir (no auto-delete) so caller can upload, then we remove.
+    tmp_root = Path(tempfile.mkdtemp(prefix="t2v_"))
+    for i, fr in enumerate(frames):
+        from PIL import Image
+        if not isinstance(fr, Image.Image):
             import numpy as np
             if torch.is_tensor(fr):
                 fr = fr.detach().float().clamp(0, 1).mul(255).to(torch.uint8).cpu().numpy()
-            if isinstance(fr, np.ndarray):
-                if fr.ndim == 3 and fr.shape[0] in (1, 3):  # CHW -> HWC
-                    fr = np.transpose(fr, (1, 2, 0))
-                norm_frames.append(Image.fromarray(fr.astype("uint8"), mode="RGB"))
-            else:
-                raise RuntimeError("Unsupported frame type from pipeline")
+            if isinstance(fr, np.ndarray) and fr.ndim == 3 and fr.shape[0] in (1, 3):  # CHW -> HWC
+                fr = np.transpose(fr, (1, 2, 0))
+            fr = Image.fromarray(fr.astype("uint8"), mode="RGB")
+        fr.convert("RGB").save(tmp_root / f"f_{i:05d}.png", format="PNG")
 
-    td = tempfile.TemporaryDirectory()
-    td_path = Path(td.name)
-    for i, im in enumerate(norm_frames):
-        im.convert("RGB").save(td_path / f"f_{i:05d}.png", format="PNG")
-
-    mp4_path = td_path / "out.mp4"
+    mp4_path = tmp_root / "out.mp4"
     cmd = [
         "ffmpeg", "-y",
         "-framerate", str(fps),
-        "-i", str(td_path / "f_%05d.png"),
+        "-i", str(tmp_root / "f_%05d.png"),
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-vf", f"scale={width}:{height}:flags=lanczos",
@@ -303,9 +294,10 @@ def generate_video_mp4(
     log.info(f"[ffmpeg] {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
     log.info(f"[t2v] mp4 muxed @ {mp4_path}")
-    return mp4_path
 
-# ---------- SQS + Dynamo logic (unchanged) ----------
+    return mp4_path  # caller will upload then delete tmp_root
+
+# ---------- SQS + Dynamo logic ----------
 def process_job(job: dict):
     class SQSMessageValidationError(Exception):
         pass
@@ -344,6 +336,7 @@ def process_job(job: dict):
     log.info(f"[processing] parent_id={parent_id} task_id={task_id} prompt='{prompt[:120]}...' size={width}x{height}@{fps}fps secs={seconds}")
 
     t_start = time.time()
+    tmp_root = None
     try:
         mp4_path = generate_video_mp4(
             prompt=prompt,
@@ -354,6 +347,7 @@ def process_job(job: dict):
             height=height,
             seed=seed,
         )
+        tmp_root = Path(mp4_path).parent
         _upload_s3(Path(mp4_path), out_s3)
         update_task_status(parent_id, task_id, "COMPLETED", out_s3)
         log.info(f"[done] Uploaded video -> {out_s3}")
@@ -365,6 +359,12 @@ def process_job(job: dict):
             log.error(f"[processing] status update failed: {u}")
         raise
     finally:
+        # Best-effort cleanup of temp directory
+        try:
+            if tmp_root and tmp_root.exists():
+                shutil.rmtree(tmp_root, ignore_errors=True)
+        except Exception:
+            pass
         log.info(f"[done] Task {task_id} finished in {time.time() - t_start:.2f}s")
 
 def worker_loop():
@@ -379,30 +379,27 @@ def worker_loop():
         )
         for m in resp.get("Messages", []):
             rcpt = m["ReceiptHandle"]
+            job = None
             try:
                 job = json.loads(m.get("Body", "{}"))
                 process_job(job)
                 sqs.delete_message(QueueUrl=QUEUE_URL, ReceiptHandle=rcpt)
             except Exception as e:
                 print(f"[worker] job failed: {e}", file=sys.stderr)
+                # best-effort mark FAILED
                 try:
-                    # best-effort FAIL status
-                    aj = job
-                    if isinstance(job, dict) and job.get("Type") == "Notification" and "Message" in job:
-                        try:
-                            aj = json.loads(job["Message"])
-                        except json.JSONDecodeError:
-                            pass
+                    aj = job or {}
                     if isinstance(aj, dict) and 'parent_id' in aj and 'task_id' in aj:
                         update_task_status(aj['parent_id'], aj['task_id'], "FAILED")
-                        print(f"[worker] Updated task status to FAILED for: {aj['task_id']}")
+                        print(f"[worker] Updated task status to FAILED for: {aj.get('task_id')}")
                 except Exception as status_error:
                     print(f"[worker] Failed to update task status to FAILED: {status_error}", file=sys.stderr)
 
+# ---------- App startup ----------
 app = FastAPI()
 
 @app.get("/healthz")
-def healthz():
+def healthz_endpoint():
     return {
         "ok": True,
         "timestamp": _iso_now_ms(),

@@ -1,16 +1,13 @@
-# Core runtime (torch is in the base image)
+# Core runtime (torch is provided by the base image)
 safetensors==0.4.3
 numpy==1.26.4
 Pillow==10.3.0
 requests==2.31.0
 
-# Diffusers stack (works well with PyTorch 2.3.x & CUDA 12.1)
+# Diffusers stack (PyTorch 2.3.x & CUDA 12.1 compatible)
 diffusers==0.29.0
 transformers==4.40.2
 accelerate==0.30.1
-
-# ModelScope (pull the model without Hugging Face)
-modelscope==1.16.0
 
 # API + AWS
 fastapi==0.110.2
